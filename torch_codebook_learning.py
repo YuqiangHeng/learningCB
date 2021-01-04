@@ -26,8 +26,11 @@ batch_size = 500
 # It is expected to return:
 # train_inp, train_out, val_inp, and val_out
 #-------------------------------------------#
-h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:10000]
-h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:10000]
+# h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:10000]
+# h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:10000]
+h_real = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:10000]
+h_imag = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:10000]
+
 h = h_real + 1j*h_imag
 #norm_factor = np.max(np.power(abs(h),2))
 norm_factor = np.max(abs(h))
@@ -68,7 +71,7 @@ test_loader = torch.utils.data.DataLoader(test, batch_size = batch_size, shuffle
 class AnalogBeamformer(nn.Module):
     def __init__(self, n_antenna, n_beam):
         super(AnalogBeamformer, self).__init__()
-        self.codebook = PhaseShifter(2*n_antenna, n_beam)
+        self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna))
         self.beam_selection = PowerPooling(2*n_beam)
     def forward(self, x):
         bf_signal = self.codebook(x)
@@ -145,7 +148,7 @@ for i,N in enumerate(num_of_beams):
     #               'codebook': theta})
     learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
     learned_codebooks.append(learned_codebook)
-    learned_codebook_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.T.conj())),2),axis=1)
+    learned_codebook_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
 learned_codebook_gains = 10*np.log10(learned_codebook_gains)
 
 learned_codebook_gains_supervised = np.zeros((len(num_of_beams),len(test_idc)))
@@ -182,7 +185,7 @@ for i,N in enumerate(num_of_beams):
     #               'codebook': theta})
     learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
     learned_codebooks_supervised.append(learned_codebook)
-    learned_codebook_gains_supervised[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.T.conj())),2),axis=1)
+    learned_codebook_gains_supervised[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
 learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervised)
 
 

@@ -47,7 +47,8 @@ class PhaseShifter(Module):
         self.in_dim = self.in_features//2
         self.out_features = out_features
         self.scale = scale
-        self.theta = Parameter(torch.Tensor(self.out_features, self.in_dim))
+        # self.theta = Parameter(torch.Tensor(self.out_features, self.in_dim))
+        self.theta = Parameter(torch.Tensor(self.in_dim, self.out_features)) 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -55,7 +56,7 @@ class PhaseShifter(Module):
         self.real_kernel = (1 / self.scale) * torch.cos(self.theta)  #
         self.imag_kernel = (1 / self.scale) * torch.sin(self.theta)  #
     
-    def forward(self, input: Tensor) -> Tensor:
+    def forward(self, inputs: Tensor) -> Tensor:
         self.real_kernel = (1 / self.scale) * torch.cos(self.theta)  #
         self.imag_kernel = (1 / self.scale) * torch.sin(self.theta)  #        
         cat_kernels_4_real = torch.cat(
@@ -72,8 +73,8 @@ class PhaseShifter(Module):
         )  # This block matrix represents the conjugate transpose of the original:
         # [ W_R, -W_I; W_I, W_R]
 
-        output = F.linear(input, cat_kernels_4_complex)
-        
+        # output = F.linear(inputs, cat_kernels_4_complex)
+        output = torch.matmul(inputs, cat_kernels_4_complex)
         return output
 
     def extra_repr(self) -> str:
