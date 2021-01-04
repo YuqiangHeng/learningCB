@@ -11,7 +11,9 @@ from keras import backend as K
 from keras import activations, initializers, regularizers, constraints
 from keras.layers import Layer, InputSpec
 import numpy as np
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+# from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from numpy.random import RandomState
+
 
 
 class CompFC(Layer):
@@ -59,11 +61,12 @@ class CompFC(Layer):
             data_format=data_format
         )
 
-        if self.init_criterion == 'he':
-            s = K.sqrt(1. / fan_in)
-        elif self.init_criterion == 'glorot':
-            s = K.sqrt(1. / (fan_in + fan_out))
-        rng = RandomStreams(seed=self.seed)
+        # if self.init_criterion == 'he':
+        #     s = K.sqrt(1. / fan_in)
+        # elif self.init_criterion == 'glorot':
+        #     s = K.sqrt(1. / (fan_in + fan_out))
+        # rng = RandomStreams(seed=self.seed)
+        rng = RandomState(seed=self.seed)
 
 
         def init_theta(shape, dtype=None):
