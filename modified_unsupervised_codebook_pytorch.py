@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Jan  3 15:15:15 2021
+Created on Mon Jan  4 20:32:27 2021
 
 @author: ethan
 """
@@ -9,7 +9,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from ComplexLayers_Torch import PhaseShifter, PowerPooling
 import torch.utils.data
-# from torch.autograd import Variable
 import torch.optim as optim
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
@@ -112,8 +111,94 @@ def fit(model, train_loader, val_loader, opt, loss_fn, EPOCHS):
         if epoch % 10 == 0:
             print('Epoch : {} Training loss = {:.2f}, Validation loss = {:.2f}.'.format(epoch, train_loss, val_loss))
     return train_loss_hist, val_loss_hist
-                
-num_antenna = h.shape[1]
+
+def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, EPOCHS):
+    optimizer = opt
+    train_loss_hist = []
+    val_loss_hist = []
+    for epoch in range(EPOCHS):
+        model.train()
+        train_loss = 0
+        for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
+            theta = model.codebook.theta.detach().clone().numpy()
+            learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+            x_batch_np = X_batch.detach().clone().numpy()
+            x_batch_complex = x_batch_np[:,:num_antenna] + 1j*x_batch_np[:,num_antenna:]
+            # z = np.matmul(x_batch_complex, learned_codebook.conj())
+            # h_est = np.matmul(np.linalg.pinv(learned_codebook.conj().T),z)
+            z = learned_codebook.conj().T @ x_batch_complex.T
+            h_est = np.linalg.pinv(learned_codebook.conj().T) @ z
+            h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
+            var_X_batch = torch.from_numpy(h_est_cat.T).float()
+            var_y_batch = y_batch.float()
+            optimizer.zero_grad()
+            output = model(var_X_batch)
+            loss = loss_fn(output, var_y_batch.unsqueeze(dim=-1))
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.detach().item()
+        train_loss /= batch_idx + 1
+        model.eval()
+        val_loss = 0
+        for batch_idx, (X_batch, y_batch) in enumerate(val_loader):
+            theta = model.codebook.theta.detach().clone().numpy()
+            learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+            x_batch_np = X_batch.detach().clone().numpy()
+            x_batch_complex = x_batch_np[:,:num_antenna] + 1j*x_batch_np[:,num_antenna:]
+            # z = np.matmul(x_batch_complex, learned_codebook.conj())
+            # h_est = np.matmul(np.linalg.pinv(learned_codebook.conj().T),z)
+            z = learned_codebook.conj().T @ x_batch_complex.T
+            h_est = np.linalg.pinv(learned_codebook.conj().T) @ z
+            h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
+            var_X_batch = torch.from_numpy(h_est_cat.T).float()
+            var_y_batch = y_batch.float()
+            output = model(var_X_batch)
+            loss = loss_fn(output, var_y_batch.unsqueeze(dim=-1))
+            val_loss += loss.detach().item()
+        val_loss /= batch_idx + 1
+        train_loss_hist.append(train_loss)
+        val_loss_hist.append(val_loss)
+        if epoch % 10 == 0:
+            print('Epoch : {} Training loss = {:.2f}, Validation loss = {:.2f}.'.format(epoch, train_loss, val_loss))
+    return train_loss_hist, val_loss_hist
+
+learned_codebook_gains_genius = np.zeros((len(num_of_beams),len(test_idc)))
+learned_codebooks_genius = []
+for i,N in enumerate(num_of_beams):
+    print(str(N) + '-beams Codebook')
+
+    # Model:
+    # ------
+    model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
+    # Training:
+    # ---------
+    opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
+    
+    train_hist, val_hist = fit_genius(model, train_loader, val_loader, opt, bf_gain_loss, 100)    
+
+
+    plt.figure()
+    plt.plot(np.array(train_hist),label='train loss')
+    plt.plot(np.array(val_hist),label='val loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('loss')
+    plt.title('Genius. {} beams'.format(N))
+    # Extract learned codebook:
+    # -------------------------
+    theta = model.codebook.theta.detach().clone().numpy()
+    print(theta.shape)
+    # name_of_file = 'theta_NLOS' + str(N) + 'vec.mat'
+    # scio.savemat(name_of_file,
+    #              {'train_inp': train_inp,
+    #               'train_out': train_out,
+    #               'val_inp': val_inp,
+    #               'val_out': val_out,
+    #               'codebook': theta})
+    learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+    learned_codebooks_genius.append(learned_codebook)
+    learned_codebook_gains_genius[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
+learned_codebook_gains_genius = 10*np.log10(learned_codebook_gains_genius)
+
 learned_codebook_gains = np.zeros((len(num_of_beams),len(test_idc)))
 learned_codebooks = []
 for i,N in enumerate(num_of_beams):
@@ -126,7 +211,7 @@ for i,N in enumerate(num_of_beams):
     # ---------
     opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
     
-    train_hist, val_hist = fit(model, train_loader, val_loader, opt, bf_gain_loss, 100)    
+    train_hist, val_hist = fit(model, train_loader, val_loader, opt, bf_gain_loss, 50)    
 
 
     plt.figure()
@@ -163,7 +248,7 @@ for i,N in enumerate(num_of_beams):
     # ---------
     opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
     
-    train_hist, val_hist = fit(model, train_loader, val_loader, opt, nn.MSELoss(), 100)    
+    train_hist, val_hist = fit(model, train_loader, val_loader, opt, nn.MSELoss(), 50)    
 
 
     plt.figure()
@@ -189,17 +274,6 @@ for i,N in enumerate(num_of_beams):
 learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervised)
 
 
-for i in range(len(num_of_beams)):
-    fig,ax = plt.subplots(figsize=(8,6))
-    ax.hist(learned_codebook_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='unsupervised, {} beams'.format(num_of_beams[i]))    
-    ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='supervised, {} beams'.format(num_of_beams[i]))
-    # tidy up the figure
-    ax.grid(True)
-    ax.legend(loc='upper left')
-    #ax.set_title('Cumulative step histograms')
-    ax.set_xlabel('BF Gain (dB)')
-    ax.set_ylabel('Emperical CDF')
-    plt.show()
 #-------------------------------------------#
 # Comppare between learned codebook and DFT codebook on test set
 #-------------------------------------------#    
@@ -238,6 +312,7 @@ for i, N in enumerate(num_of_beams):
     fig,ax = plt.subplots(figsize=(8,6))
     ax.hist(learned_codebook_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook unsupervised, {} beams'.format(num_of_beams[i]))    
     ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook supervised, {} beams'.format(num_of_beams[i]))
+    ax.hist(learned_codebook_gains_genius[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook genius, {} beams'.format(num_of_beams[i]))
     ax.hist(dft_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='DFT codebook,{} beams'.format(num_of_beams[i]))
     # tidy up the figure
     ax.grid(True)
