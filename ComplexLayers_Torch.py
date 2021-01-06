@@ -81,6 +81,20 @@ class PhaseShifter(Module):
         return 'in_features={}, out_features={}'.format(
             self.in_features, self.out_features
         )
+
+class ComputePower(Module):
+    def __init__(self, in_shape):
+        super(ComputePower, self).__init__()
+        self.shape = in_shape
+        self.len_real = int(self.shape/2)
+
+    def forward(self, x):
+        real_part = x[:,:self.len_real]
+        imag_part = x[:,self.len_real:]
+        sq_real = torch.pow(real_part,2)
+        sq_imag = torch.pow(imag_part,2)
+        abs_values = sq_real + sq_imag
+        return abs_values
     
 class PowerPooling(Module):
     def __init__(self, in_shape):
