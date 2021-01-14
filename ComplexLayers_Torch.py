@@ -41,7 +41,7 @@ class PhaseShifter(Module):
     scale: float
     theta: Tensor
 
-    def __init__(self, in_features: int, out_features: int, scale: float=1) -> None:
+    def __init__(self, in_features: int, out_features: int, scale: float=1, theta = None) -> None:
         super(PhaseShifter, self).__init__()
         self.in_features = in_features
         self.in_dim = self.in_features//2
@@ -49,10 +49,14 @@ class PhaseShifter(Module):
         self.scale = scale
         # self.theta = Parameter(torch.Tensor(self.out_features, self.in_dim))
         self.theta = Parameter(torch.Tensor(self.in_dim, self.out_features)) 
-        self.reset_parameters()
+        self.reset_parameters(theta)
 
-    def reset_parameters(self) -> None:
-        init.uniform_(self.theta, a=0, b=2*np.pi)
+    def reset_parameters(self, theta = None) -> None:
+        if theta is None:
+            init.uniform_(self.theta, a=0, b=2*np.pi)
+        else:
+            assert theta.shape == (self.in_dim,self.out_features)
+            self.theta = Parameter(theta) 
         self.real_kernel = (1 / self.scale) * torch.cos(self.theta)  #
         self.imag_kernel = (1 / self.scale) * torch.sin(self.theta)  #
     

@@ -12,12 +12,14 @@ import torch.utils.data
 import torch.optim as optim
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
-from beam_utils import GaussianCenters
+from beam_utils import GaussianCenters, DFT_codebook
 
 np.random.seed(7)
-# num_of_beams = [2, 4, 8, 16, 32, 64, 96, 128]
-num_of_beams = [8, 16, 32, 64, 128, 256]
+num_of_beams = [8, 16, 24, 32, 64, 96, 128]
+# num_of_beams = [32]
 num_antenna = 64
+antenna_sel = np.arange(num_antenna)
+
 # Training and testing data:
 # --------------------------
 batch_size = 500
@@ -26,25 +28,25 @@ batch_size = 500
 # It is expected to return:
 # train_inp, train_out, val_inp, and val_out
 #-------------------------------------------#
-h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')
-h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')
+h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:,antenna_sel]
+h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:,antenna_sel]
 loc = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy')
 # h_real = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')
 # h_imag = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')
 BS_loc = [641,435,10]
 num_samples = h_real.shape[0]
-
 gc = GaussianCenters(n_clusters=10, arrival_rate = 1000, cluster_variance = 10)
 sel_samples = gc.sample()
-gc.plot_sample(sel_samples)
+# gc.plot_sample(sel_samples)
 # sel_samples = np.arange(10000)
 h_real = h_real[sel_samples,:]
 h_imag = h_imag[sel_samples,:]
 loc = loc[sel_samples,:]
 
-plt.figure()
+plt.figure(figsize=(8,6))
 plt.scatter(loc[:,0], loc[:,1], s=1, label='UE')
 plt.scatter(BS_loc[0], BS_loc[1], s=10, marker='s', label='BS')
+plt.legend(loc='lower left')
 plt.xlabel('x (meter)')
 plt.ylabel('y (meter)')
 plt.title('UE Distribution')
@@ -405,19 +407,6 @@ learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervise
 #-------------------------------------------#
 # Comppare between learned codebook and DFT codebook on test set
 #-------------------------------------------#    
-def DFT_codebook(nseg,n_antenna):
-    bfdirections = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),nseg))
-    codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
-    
-    for i in range(nseg):
-        phi = bfdirections[i]
-        #array response vector original
-        arr_response_vec = [-1j*np.pi*k*np.cos(phi) for k in range(n_antenna)]
-        #array response vector for rotated ULA
-        #arr_response_vec = [1j*np.pi*k*np.sin(phi+np.pi/2) for k in range(64)]
-        codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
-    return codebook_all
-
 dft_gains = np.zeros((len(num_of_beams),len(test_idc)))
 for i, nbeams in enumerate(num_of_beams):
     dft_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], np.transpose(np.conj(DFT_codebook(nbeams,num_antenna))))),2),axis=1)
@@ -438,11 +427,11 @@ plt.show()
 
 for i, N in enumerate(num_of_beams):
     fig,ax = plt.subplots(figsize=(8,6))
-    ax.hist(learned_codebook_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook unsupervised, {} beams'.format(num_of_beams[i]))    
-    ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook supervised, {} beams'.format(num_of_beams[i]))
-    ax.hist(learned_codebook_gains_self_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook self-supervised, {} beams'.format(num_of_beams[i]))
-    ax.hist(learned_codebook_gains_genius[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook genius, {} beams'.format(num_of_beams[i]))
-    ax.hist(dft_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='DFT codebook,{} beams'.format(num_of_beams[i]))
+    ax.hist(learned_codebook_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='GD, full h')    
+    ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='Supervised (EGC)')
+    ax.hist(learned_codebook_gains_genius[i,:],bins=100,density=True,cumulative=True,histtype='step',label='GD, est h')
+    ax.hist(learned_codebook_gains_self_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='Self-supervised')
+    ax.hist(dft_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='DFT')
     # tidy up the figure
     ax.grid(True)
     ax.legend(loc='upper left')
@@ -451,3 +440,30 @@ for i, N in enumerate(num_of_beams):
     ax.set_ylabel('Emperical CDF')
     ax.set_title('Codebook comparison with {} beams.'.format(N))
     plt.show()
+
+plt.figure(figsize=(8,6))
+plt.plot(num_of_beams,np.mean(learned_codebook_gains_supervised,axis=1),marker='+',label='Supervised (EGC)')
+plt.plot(num_of_beams,np.mean(learned_codebook_gains_self_supervised,axis=1),marker='s',label='Self-supervised')
+plt.plot(num_of_beams,np.mean(learned_codebook_gains,axis=1),marker='o',label='GD, full h')
+plt.plot(num_of_beams,np.mean(learned_codebook_gains_genius,axis=1),marker='x',label='GD, est h')
+plt.plot(num_of_beams,np.mean(dft_gains,axis=1),marker='D',label='DFT')
+plt.legend()
+plt.xticks(num_of_beams, num_of_beams)
+plt.grid(True)
+plt.xlabel('number of beams')
+plt.ylabel('avg BF gain (dB)')
+plt.show()
+
+percentile = 5
+plt.figure(figsize=(8,6))
+plt.plot(num_of_beams,np.percentile(learned_codebook_gains_supervised,q=percentile,axis=1),marker='+',label='Supervised (EGC)')
+plt.plot(num_of_beams,np.percentile(learned_codebook_gains_self_supervised,q=percentile,axis=1),marker='s',label='Self-supervised')
+plt.plot(num_of_beams,np.percentile(learned_codebook_gains,q=percentile,axis=1),marker='o',label='GD, full h')
+plt.plot(num_of_beams,np.percentile(learned_codebook_gains_genius,q=percentile,axis=1),marker='x',label='GD, est h')
+plt.plot(num_of_beams,np.percentile(dft_gains,q=percentile,axis=1),marker='D',label='DFT')
+plt.legend()
+plt.xticks(num_of_beams, num_of_beams)
+plt.grid(True)
+plt.xlabel('number of beams')
+plt.ylabel('{}-percentile BF gain (dB)'.format(percentile))
+plt.show()

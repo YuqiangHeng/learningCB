@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Jan  5 20:23:40 2021
+Created on Sat Jan  9 12:10:32 2021
 
 @author: ethan
 """
@@ -11,14 +11,16 @@ import matplotlib.pyplot as plt
 
 
 ue_loc_fname = 'D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy'
+h_real_fname = 'D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy'
+h_imag_fname = 'D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy'
+
 bs_loc = [641,435,10]
 n_antenna = 64
 
-class GaussianCenters():
+class MAML_Codebook_Dataset():
     def __init__(self, possible_loc = np.load(ue_loc_fname)[:,:2],
-#               means:np.array=default_means, #2-d array w/. shape lx2, l centers
-#               covs:np.array=default_covs, #3-d array w/. shape lx2x2, covariance of each center
-#               arrival_rates:np.array=default_arr_rates # 1-d lx1 array, arrival rates of UEs at each center
+                 h_real = np.load(h_real_fname),
+                 h_imag = np.load(h_imag_fname),
                n_clusters = 4, arrival_rate = 5, cluster_variance = 5, random_clusters = True, cluster_exclusion = False, seed = 0
                ):
         self.arrival_rate = arrival_rate
@@ -32,6 +34,8 @@ class GaussianCenters():
         self.n_clusters = n_clusters
         self.random_clusters = random_clusters
         self.all_loc = possible_loc
+        self.h_real = h_real
+        self.h_imag = h_imag
         self.tot_num_pts = self.all_loc.shape[0]
         self.seed = seed
         self.Random = np.random.RandomState(seed = self.seed)
@@ -117,17 +121,7 @@ class GaussianCenters():
             samples = self.Random.multivariate_normal(self.current_cluster_centers[i,:], self.covs[i,:,:], num_UEs[i])
             sampled_loc[sum(num_UEs[0:i]):sum(num_UEs[0:i+1]),:] = samples
         sampled_idc = self.find_closest_ue(sampled_loc)
-        return sampled_idc
+        sampled_h_real = self.h_real[sampled_idc]
+        sampled_h_imag = self.h_imag[sampled_idc]
+        return sampled_h_real,sampled_h_imag
     
-def DFT_codebook(nseg,n_antenna):
-    bfdirections = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),nseg))
-    codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
-    
-    for i in range(nseg):
-        phi = bfdirections[i]
-        #array response vector original
-        arr_response_vec = [-1j*np.pi*k*np.cos(phi) for k in range(n_antenna)]
-        #array response vector for rotated ULA
-        #arr_response_vec = [1j*np.pi*k*np.sin(phi+np.pi/2) for k in range(64)]
-        codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
-    return codebook_all
