@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jan  4 20:32:27 2021
+Created on Tue Jan 26 20:54:04 2021
 
 @author: ethan
 """
-
+import scipy.io as sio
 import numpy as np
 import matplotlib.pyplot as plt
 from ComplexLayers_Torch import PhaseShifter, PowerPooling, ComputePower
@@ -20,52 +20,33 @@ num_of_beams = [8, 16, 24, 32, 64, 96, 128]
 num_antenna = 64
 antenna_sel = np.arange(num_antenna)
 
+snr_db = 5
+snr = 10**(snr_db/10)
+
+nepoch = 5
+lr = 0.1
+batch_size = 500
 # Training and testing data:
 # --------------------------
-batch_size = 500
-nepoch = 100
 
-h_est_force_z = False #
-#-------------------------------------------#
-# Here should be the data_preparing function
-# It is expected to return:
-# train_inp, train_out, val_inp, and val_out
-#-------------------------------------------#
-h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:,antenna_sel]
-h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:,antenna_sel]
-loc = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy')
-# h_real = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')
-# h_imag = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')
-BS_loc = [641,435,10]
-num_samples = h_real.shape[0]
-gc = GaussianCenters(n_clusters=10, arrival_rate = 1000, cluster_variance = 10)
-sel_samples = gc.sample()
-# gc.plot_sample(sel_samples)
-# sel_samples = np.arange(10000)
-h_real = h_real[sel_samples,:]
-h_imag = h_imag[sel_samples,:]
-loc = loc[sel_samples,:]
+fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/channel_real.mat'
+fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/channel_imag.mat'
+fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/loc.mat'
 
-plt.figure(figsize=(8,6))
-plt.scatter(loc[:,0], loc[:,1], s=1, label='UE')
-plt.scatter(BS_loc[0], BS_loc[1], s=10, marker='s', label='BS')
-plt.legend(loc='lower left')
-plt.xlabel('x (meter)')
-plt.ylabel('y (meter)')
-plt.title('UE Distribution')
-plt.show()
+h_real = sio.loadmat(fname_h_real)['channel_real']
+h_imag = sio.loadmat(fname_h_imag)['channel_imag']
+loc = sio.loadmat(fname_loc)['loc']
 
 h = h_real + 1j*h_imag
 #norm_factor = np.max(np.power(abs(h),2))
 norm_factor = np.max(abs(h))
 h_scaled = h/norm_factor
+h = h_scaled
 h_concat_scaled = np.concatenate((h_real/norm_factor,h_imag/norm_factor),axis=1)
 # Compute EGC gain
 egc_gain_scaled = np.power(np.sum(abs(h_scaled),axis=1),2)/num_antenna
-train_idc, test_idc = train_test_split(np.arange(h.shape[0]),test_size=0.4)
-val_idc, test_idc = train_test_split(test_idc,test_size=0.5)
+train_idc, test_idc = train_test_split(np.arange(h.shape[0]),test_size=0.3)
 x_train,y_train = h_concat_scaled[train_idc,:],egc_gain_scaled[train_idc]
-x_val,y_val = h_concat_scaled[val_idc,:],egc_gain_scaled[val_idc]
 x_test,y_test = h_concat_scaled[test_idc,:],egc_gain_scaled[test_idc]
 
 # torch_x_train = torch.from_numpy(x_train).type(torch.LongTensor)
@@ -77,50 +58,35 @@ x_test,y_test = h_concat_scaled[test_idc,:],egc_gain_scaled[test_idc]
 
 torch_x_train = torch.from_numpy(x_train)
 torch_y_train = torch.from_numpy(y_train)
-torch_x_val = torch.from_numpy(x_val)
-torch_y_val = torch.from_numpy(y_val)
 torch_x_test = torch.from_numpy(x_test)
 torch_y_test = torch.from_numpy(y_test)
 
 # Pytorch train and test sets
 train = torch.utils.data.TensorDataset(torch_x_train,torch_y_train)
-val = torch.utils.data.TensorDataset(torch_x_val,torch_y_val)
 test = torch.utils.data.TensorDataset(torch_x_test,torch_y_test)
 
 # data loader
-train_loader = torch.utils.data.DataLoader(train, batch_size = batch_size, shuffle = False)
-val_loader = torch.utils.data.DataLoader(val, batch_size = batch_size, shuffle = False)
-test_loader = torch.utils.data.DataLoader(test, batch_size = batch_size, shuffle = False)
+train_loader = torch.utils.data.DataLoader(train, batch_size = batch_size, shuffle = True)
+test_loader = torch.utils.data.DataLoader(test, batch_size = batch_size, shuffle = True)
 
 class AnalogBeamformer(nn.Module):
     def __init__(self, n_antenna, n_beam):
         super(AnalogBeamformer, self).__init__()
         self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna))
         self.beam_selection = PowerPooling(2*n_beam)
-        self.compute_power = ComputePower(2*n_beam)
-    def forward(self, x, z = None):
+    def forward(self, x):
         bf_signal = self.codebook(x)
-        if not z is None:
-            bf_power = self.compute_power(bf_signal)
-            diff = z - bf_power.detach().clone()
-            bf_power = bf_power + diff
-            bf_power_sel = torch.max(bf_power, dim=-1)[0]
-            bf_power_sel = torch.unsqueeze(bf_power_sel,dim=-1)
-        else:
-            bf_power_sel = self.beam_selection(bf_signal)
-        return bf_power_sel
+        bf_power_sel = self.beam_selection(bf_signal)
+        return torch.log(bf_power_sel)
 
 class Self_Supervised_AnalogBeamformer(nn.Module):
     def __init__(self, n_antenna, n_beam):
         super(Self_Supervised_AnalogBeamformer, self).__init__()
         self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna))
         self.compute_power = ComputePower(2*n_beam)
-    def forward(self, x, z = None):
+    def forward(self, x):
         bf_signal = self.codebook(x)
         bf_power = self.compute_power(bf_signal)
-        if not z is None:
-            diff = z - bf_power.detach().clone()
-            bf_power = bf_power + diff
         return bf_power
 
 def bf_gain_loss(y_pred, y_true):
@@ -177,11 +143,8 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
             var_X_batch = torch.from_numpy(h_est_cat.T).float()
             var_y_batch = y_batch.float()
-            z_var = None
-            if h_est_force_z:
-                z_var = torch.from_numpy(z.T).float()
             optimizer.zero_grad()
-            output = model(var_X_batch, z_var)
+            output = model(var_X_batch)
             loss = loss_fn(output, var_y_batch.unsqueeze(dim=-1))
             loss.backward()
             optimizer.step()
@@ -201,10 +164,7 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
             var_X_batch = torch.from_numpy(h_est_cat.T).float()
             var_y_batch = y_batch.float()
-            z_var = None
-            if h_est_force_z:
-                z_var = torch.from_numpy(z.T).float()
-            output = model(var_X_batch,z_var)
+            output = model(var_X_batch)
             loss = loss_fn(output, var_y_batch.unsqueeze(dim=-1))
             val_loss += loss.detach().item()
         val_loss /= batch_idx + 1
@@ -230,11 +190,8 @@ def fit_self_supervised(model:Self_Supervised_AnalogBeamformer, train_loader, va
             h_est = np.linalg.pinv(learned_codebook.conj().T) @ z
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
             var_X_batch = torch.from_numpy(h_est_cat.T).float()
-            z_var = None
-            if h_est_force_z:
-                z_var = torch.from_numpy(z.T).float()
             optimizer.zero_grad()
-            bf_power =  model(var_X_batch, z_var)
+            bf_power =  model(var_X_batch)
             bf_argmax = torch.argmax(bf_power.detach().clone(),dim=1)
             loss = loss_fn(bf_power, bf_argmax)
             loss.backward()
@@ -254,10 +211,7 @@ def fit_self_supervised(model:Self_Supervised_AnalogBeamformer, train_loader, va
             h_est = np.linalg.pinv(learned_codebook.conj().T) @ z
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
             var_X_batch = torch.from_numpy(h_est_cat.T).float()
-            z_var = None
-            if h_est_force_z:
-                z_var = torch.from_numpy(z.T).float()
-            bf_power =  model(var_X_batch,z_var)
+            bf_power =  model(var_X_batch)
             bf_argmax = torch.argmax(bf_power.detach().clone(),dim=1)
             loss = loss_fn(bf_power, bf_argmax)
             val_loss += loss.detach().item()
@@ -281,9 +235,9 @@ for i,N in enumerate(num_of_beams):
     model = Self_Supervised_AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
     # Training:
     # ---------
-    opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
+    opt = optim.Adam(model.parameters(),lr=lr, betas=(0.9,0.999), amsgrad=False)
     
-    train_hist, val_hist = fit_self_supervised(model, train_loader, val_loader, opt, nepoch)    
+    train_hist, val_hist = fit_self_supervised(model, train_loader, test_loader, opt, nepoch)    
 
 
     plt.figure()
@@ -306,7 +260,9 @@ for i,N in enumerate(num_of_beams):
     learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
     learned_codebooks_self_supervised.append(learned_codebook)
     learned_codebook_gains_self_supervised[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
+tput_self_supervised = np.log2(1+learned_codebook_gains_self_supervised*snr)
 learned_codebook_gains_self_supervised = 10*np.log10(learned_codebook_gains_self_supervised)
+tput_self_supervised = np.log2(1+learned_codebook_gains_self_supervised*snr)
 
 
 # ------------------------------------------------------------------
@@ -322,9 +278,9 @@ for i,N in enumerate(num_of_beams):
     model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
     # Training:
     # ---------
-    opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
+    opt = optim.Adam(model.parameters(),lr=lr, betas=(0.9,0.999), amsgrad=False)
     
-    train_hist, val_hist = fit_genius(model, train_loader, val_loader, opt, bf_gain_loss, nepoch)    
+    train_hist, val_hist = fit_genius(model, train_loader, test_loader, opt, bf_gain_loss, nepoch)    
 
 
     plt.figure()
@@ -347,6 +303,7 @@ for i,N in enumerate(num_of_beams):
     learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
     learned_codebooks_genius.append(learned_codebook)
     learned_codebook_gains_genius[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
+tput_genius = np.log2(1+learned_codebook_gains_genius*snr)
 learned_codebook_gains_genius = 10*np.log10(learned_codebook_gains_genius)
 
 # ------------------------------------------------------------------
@@ -362,9 +319,9 @@ for i,N in enumerate(num_of_beams):
     model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
     # Training:
     # ---------
-    opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
+    opt = optim.Adam(model.parameters(),lr=lr, betas=(0.9,0.999), amsgrad=False)
     
-    train_hist, val_hist = fit(model, train_loader, val_loader, opt, bf_gain_loss, nepoch)    
+    train_hist, val_hist = fit(model, train_loader, test_loader, opt, bf_gain_loss, nepoch)    
 
 
     plt.figure()
@@ -387,6 +344,7 @@ for i,N in enumerate(num_of_beams):
     learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
     learned_codebooks.append(learned_codebook)
     learned_codebook_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
+tput_learned = np.log2(1+learned_codebook_gains*snr)
 learned_codebook_gains = 10*np.log10(learned_codebook_gains)
 
 # ------------------------------------------------------------------
@@ -402,9 +360,9 @@ for i,N in enumerate(num_of_beams):
     model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
     # Training:
     # ---------
-    opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
+    opt = optim.Adam(model.parameters(),lr=lr, betas=(0.9,0.999), amsgrad=False)
     
-    train_hist, val_hist = fit(model, train_loader, val_loader, opt, nn.MSELoss(), nepoch)    
+    train_hist, val_hist = fit(model, train_loader, test_loader, opt, nn.MSELoss(), nepoch)    
 
 
     plt.figure()
@@ -427,6 +385,7 @@ for i,N in enumerate(num_of_beams):
     learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
     learned_codebooks_supervised.append(learned_codebook)
     learned_codebook_gains_supervised[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
+tput_supervised = np.log2(1+learned_codebook_gains_supervised*snr)
 learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervised)
 
 
@@ -436,6 +395,7 @@ learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervise
 dft_gains = np.zeros((len(num_of_beams),len(test_idc)))
 for i, nbeams in enumerate(num_of_beams):
     dft_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], np.transpose(np.conj(DFT_codebook(nbeams,num_antenna))))),2),axis=1)
+tput_dft = np.log2(1+dft_gains*snr)
 dft_gains = 10*np.log10(dft_gains)
 
 fig,ax = plt.subplots(figsize=(8,6))
@@ -480,16 +440,28 @@ plt.xlabel('number of beams')
 plt.ylabel('avg BF gain (dB)')
 plt.show()
 
-percentile = 5
 plt.figure(figsize=(8,6))
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains_supervised,q=percentile,axis=1),marker='+',label='Supervised (EGC)')
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains_self_supervised,q=percentile,axis=1),marker='s',label='Self-supervised')
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains,q=percentile,axis=1),marker='o',label='GD, full h')
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains_genius,q=percentile,axis=1),marker='x',label='GD, est h')
-plt.plot(num_of_beams,np.percentile(dft_gains,q=percentile,axis=1),marker='D',label='DFT')
+plt.plot(num_of_beams,np.mean(tput_supervised,axis=1),marker='+',label='Supervised (EGC)')
+plt.plot(num_of_beams,np.mean(tput_self_supervised,axis=1),marker='s',label='Self-supervised')
+plt.plot(num_of_beams,np.mean(tput_learned,axis=1),marker='o',label='GD, full h')
+plt.plot(num_of_beams,np.mean(tput_genius,axis=1),marker='x',label='GD, est h')
+plt.plot(num_of_beams,np.mean(tput_dft,axis=1),marker='D',label='DFT')
 plt.legend()
 plt.xticks(num_of_beams, num_of_beams)
 plt.grid(True)
 plt.xlabel('number of beams')
-plt.ylabel('{}-percentile BF gain (dB)'.format(percentile))
+plt.ylabel('achievable rate (bps)')
 plt.show()
+# percentile = 5
+# plt.figure(figsize=(8,6))
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains_supervised,q=percentile,axis=1),marker='+',label='Supervised (EGC)')
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains_self_supervised,q=percentile,axis=1),marker='s',label='Self-supervised')
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains,q=percentile,axis=1),marker='o',label='GD, full h')
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains_genius,q=percentile,axis=1),marker='x',label='GD, est h')
+# plt.plot(num_of_beams,np.percentile(dft_gains,q=percentile,axis=1),marker='D',label='DFT')
+# plt.legend()
+# plt.xticks(num_of_beams, num_of_beams)
+# plt.grid(True)
+# plt.xlabel('number of beams')
+# plt.ylabel('{}-percentile BF gain (dB)'.format(percentile))
+# plt.show()

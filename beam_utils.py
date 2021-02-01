@@ -7,6 +7,7 @@ Created on Tue Jan  5 20:23:40 2021
 
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 # from typing import Tuple
 
 
@@ -122,7 +123,6 @@ class GaussianCenters():
 def DFT_codebook(nseg,n_antenna):
     bfdirections = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),nseg))
     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
-    
     for i in range(nseg):
         phi = bfdirections[i]
         #array response vector original
@@ -131,3 +131,30 @@ def DFT_codebook(nseg,n_antenna):
         #arr_response_vec = [1j*np.pi*k*np.sin(phi+np.pi/2) for k in range(64)]
         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
     return codebook_all
+
+def DFT_beam(n_antenna,azimuths):
+    codebook_all = np.zeros((len(azimuths),n_antenna),dtype=np.complex_)
+    for i,phi in enumerate(azimuths):
+        #array response vector original
+        arr_response_vec = [-1j*np.pi*k*np.cos(phi) for k in range(n_antenna)]
+        #array response vector for rotated ULA
+        #arr_response_vec = [1j*np.pi*k*np.sin(phi+np.pi/2) for k in range(64)]
+        codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
+    return codebook_all
+
+def DFT_beam_blockmatrix(n_antenna,azimuths):
+    codebook = DFT_beam(n_antenna,azimuths).T
+    w_r = np.real(codebook)
+    w_i = np.imag(codebook)
+    w = np.concatenate((np.concatenate((w_r,-w_i),axis=1),np.concatenate((w_i,w_r),axis=1)),axis=0)
+    return w
+
+def DFT_codebook_blockmatrix(nseg,n_antenna):
+    codebook = DFT_codebook(nseg,n_antenna).T
+    w_r = np.real(codebook)
+    w_i = np.imag(codebook)
+    w = np.concatenate((np.concatenate((w_r,-w_i),axis=1),np.concatenate((w_i,w_r),axis=1)),axis=0)
+    return w
+
+def bf_gain_loss(y_pred, y_true):
+    return -torch.mean(y_pred,dim=0)

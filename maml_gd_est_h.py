@@ -41,6 +41,7 @@ shots = 50
 update_step = 1
 ntest = 50
 nval = 10
+h_est_force_z = True #
 
 fast_lr = 0.5
 meta_lr = 0.5
@@ -78,33 +79,45 @@ class AnalogBeamformer(nn.Module):
         super(AnalogBeamformer, self).__init__()
         self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna), theta = theta)
         self.beam_selection = PowerPooling(2*n_beam)
-    def forward(self, x):
-        bf_signal = self.codebook(x)
-        bf_power_sel = self.beam_selection(bf_signal)
-        return bf_power_sel
-
-class Self_Supervised_AnalogBeamformer(nn.Module):
-    def __init__(self, n_antenna, n_beam):
-        super(Self_Supervised_AnalogBeamformer, self).__init__()
-        self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna))
         self.compute_power = ComputePower(2*n_beam)
-    def forward(self, x):
+    def forward(self, x, z) -> None:
         bf_signal = self.codebook(x)
-        bf_power = self.compute_power(bf_signal)
-        return bf_power
+        # bf_power_sel = self.beam_selection(bf_signal)
+        # return bf_power_sel
+        if not z is None:
+            diff = z - bf_signal.detach().clone()
+            bf_signal = bf_signal + diff
+            bf_power = self.compute_power(bf_signal)
+            bf_power_sel = torch.max(bf_power, dim=-1)[0]
+            bf_power_sel = torch.unsqueeze(bf_power_sel,dim=-1)
+        else:
+            bf_power_sel = self.beam_selection(bf_signal)
+        return bf_power_sel
+    
+    def get_theta(self) -> torch.Tensor:
+        return self.codebook.get_theta()
+    def get_weights(self) -> torch.Tensor:
+        return self.codebook.get_weights()
 
 def bf_gain_loss(y_pred, y_true):
     return -torch.mean(y_pred,dim=0)
 
-def estimate_h(h_batch, model, n_antenna):
-    h_batch_complex = h_batch[:,:n_antenna] + 1j*h_batch[:,n_antenna:]
-    # theta = model.codebook.theta.detach().clone().numpy()
-    # bf_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
-    bf_codebook = DFT_codebook(n_antenna, n_antenna).T
-    z = bf_codebook.conj().T @ h_batch_complex.T
-    h_est = np.linalg.pinv(bf_codebook.conj().T) @ z
-    h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
-    return h_est_cat.T
+def estimate_h(h_batch, model, n_antenna, h_est_force_z = False):
+    # h_batch_complex = h_batch[:,:n_antenna] + 1j*h_batch[:,n_antenna:]
+    # # theta = model.codebook.theta.detach().clone().numpy()
+    # # bf_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
+    # bf_codebook = DFT_codebook(n_antenna, n_antenna).T
+    # z = bf_codebook.conj().T @ h_batch_complex.T
+    # h_est = np.linalg.pinv(bf_codebook.conj().T) @ z
+    # h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
+    
+    bf_weights = model.get_weights().numpy()
+    z = h_batch @ bf_weights
+    h_est_cat = np.linalg.pinv(bf_weights.T) @ z.T
+    z_var = None
+    if h_est_force_z:
+        z_var = z
+    return h_est_cat.T, z_var
 
 def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, EPOCHS):
     optimizer = opt
@@ -125,8 +138,11 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
             var_X_batch = torch.from_numpy(h_est_cat.T).float()
             var_y_batch = y_batch.float()
+            z_var = None
+            if h_est_force_z:
+                z_var = torch.from_numpy(z.T).float()
             optimizer.zero_grad()
-            output = model(var_X_batch)
+            output = model(var_X_batch,z_var)
             loss = loss_fn(output, var_y_batch.unsqueeze(dim=-1))
             loss.backward()
             optimizer.step()
@@ -146,7 +162,10 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
             var_X_batch = torch.from_numpy(h_est_cat.T).float()
             var_y_batch = y_batch.float()
-            output = model(var_X_batch)
+            z_var = None
+            if h_est_force_z:
+                z_var = torch.from_numpy(z.T).float()
+            output = model(var_X_batch,z_var)
             loss = loss_fn(output, var_y_batch.unsqueeze(dim=-1))
             val_loss += loss.detach().item()
         val_loss /= batch_idx + 1
@@ -157,7 +176,7 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
     return train_loss_hist, val_loss_hist
 
 
-def fast_adapt_est_h(batch, learner, loss, adaptation_steps, shots):
+def fast_adapt_est_h(batch, learner, loss, adaptation_steps, shots, h_est_force_z = False):
     data, labels = batch
     # Separate data into adaptation/evalutation sets
     adaptation_indices = np.zeros(data.shape[0], dtype=bool)
@@ -170,25 +189,37 @@ def fast_adapt_est_h(batch, learner, loss, adaptation_steps, shots):
 
     # Adapt the model
     for step in range(adaptation_steps):
-        adaptation_x = torch.from_numpy(estimate_h(adaptation_h, learner.module, num_antenna)).float() 
-        train_error = loss(learner(adaptation_x), adaptation_y)
+        # adaptation_x = torch.from_numpy(estimate_h(adaptation_h, learner.module, num_antenna)).float() 
+        adaptation_x, adaptation_z = estimate_h(adaptation_h, learner.module, num_antenna, h_est_force_z)
+        adaptation_x = torch.from_numpy(adaptation_x).float()
+        if h_est_force_z:
+            adaptation_z = torch.from_numpy(adaptation_z).float()
+        train_error = loss(learner(adaptation_x,adaptation_z), adaptation_y)
         learner.adapt(train_error)
 
     # Evaluate the adapted model
-    evaluation_x = torch.from_numpy(estimate_h(evaluation_h, learner.module, num_antenna)).float()        
-    predictions = learner(evaluation_x)
+    # evaluation_x = torch.from_numpy(estimate_h(evaluation_h, learner.module, num_antenna)).float()  
+    evaluation_x, evaluation_z = estimate_h(evaluation_h, learner.module, num_antenna, h_est_force_z)
+    evaluation_x = torch.from_numpy(evaluation_x).float()
+    if h_est_force_z:
+        evaluation_z = torch.from_numpy(evaluation_z).float()    
+    predictions = learner(evaluation_x,evaluation_z)
     valid_error = loss(predictions, evaluation_y)
     return valid_error
         
-def train_est_h(train_batch, model, optimizer, loss_fn, train_steps):
+def train_est_h(train_batch, model, optimizer, loss_fn, train_steps, h_est_force_z = False):
     model.train()
     train_h,train_y = train_batch
     train_y = torch.from_numpy(train_y).float()
     train_loss = 0.0
     for step in range(train_steps):
-        train_x = torch.from_numpy(estimate_h(train_h, model, num_antenna)).float() 
+        # train_x = torch.from_numpy(estimate_h(train_h, model, num_antenna)).float() 
+        train_x, train_z = estimate_h(train_h, model, num_antenna, h_est_force_z)
+        train_x = torch.from_numpy(train_x).float()
+        if h_est_force_z:
+            train_z = torch.from_numpy(train_z).float()
         optimizer.zero_grad()
-        output = model(train_x)
+        output = model(train_x,train_z)
         loss = loss_fn(output, train_y.unsqueeze(dim=-1))
         loss.backward()
         optimizer.step()
@@ -196,12 +227,15 @@ def train_est_h(train_batch, model, optimizer, loss_fn, train_steps):
     train_loss /= train_steps
     return train_loss
 
-def eval_est_h(val_batch, model, loss_fn):
+def eval_est_h(val_batch, model, loss_fn, h_est_force_z = False):
     model.eval()
     val_h,val_y = val_batch
     val_y = torch.from_numpy(val_y).float()
-    val_x = torch.from_numpy(estimate_h(val_h, model, num_antenna)).float() 
-    loss = loss_fn(model(val_x),val_y)
+    # val_x = torch.from_numpy(estimate_h(val_h, model, num_antenna)).float() 
+    val_x, val_z = estimate_h(val_h, model, num_antenna, h_est_force_z)
+    if h_est_force_z:
+        val_z = torch.from_numpy(val_z).float()
+    loss = loss_fn(model(val_x,val_z),val_y)
     return loss.item()
    
     
@@ -243,7 +277,8 @@ for i,N in enumerate(num_of_beams):
                                         learner,
                                         loss_fn,
                                         update_step,
-                                        shots)
+                                        shots,
+                                        h_est_force_z)
             evaluation_error.backward()
             meta_train_error += evaluation_error.item()
     
@@ -255,7 +290,8 @@ for i,N in enumerate(num_of_beams):
                                         learner,
                                         loss_fn,
                                         update_step,
-                                        shots)
+                                        shots,
+                                        h_est_force_z)
             meta_valid_error += evaluation_error.item()
     
         # Print some metrics
@@ -283,13 +319,13 @@ for i,N in enumerate(num_of_beams):
                 # model_maml = maml.module.clone()
                 model_maml = AnalogBeamformer(n_antenna = num_antenna, n_beam = N, theta = torch.from_numpy(maml.module.codebook.theta.detach().clone().numpy()))
                 opt_maml_model = optim.Adam(model_maml.parameters(),lr=fast_lr, betas=(0.9,0.999), amsgrad=False)
-                train_loss_maml = train_est_h((x_train,y_train), model_maml, opt_maml_model, loss_fn, update_step)
+                train_loss_maml = train_est_h((x_train,y_train), model_maml, opt_maml_model, loss_fn, update_step, h_est_force_z)
                 maml_theta = model_maml.codebook.theta.detach().clone().numpy()
                 maml_codebook = np.exp(1j*maml_theta)/np.sqrt(num_antenna)       
                 
                 model_scratch = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
                 opt_scratch_model = optim.Adam(model_scratch.parameters(),lr=fast_lr, betas=(0.9,0.999), amsgrad=False)
-                train_loss_scratch = train_est_h((x_train,y_train), model_scratch, opt_scratch_model, loss_fn, update_step)
+                train_loss_scratch = train_est_h((x_train,y_train), model_scratch, opt_scratch_model, loss_fn, update_step, h_est_force_z)
                 scratch_theta = model_scratch.codebook.theta.detach().clone().numpy()
                 scratch_codebook = np.exp(1j*scratch_theta)/np.sqrt(num_antenna)
             
@@ -325,13 +361,13 @@ for i,N in enumerate(num_of_beams):
         # model_maml = maml.module.clone()
         model_maml = AnalogBeamformer(n_antenna = num_antenna, n_beam = N, theta = torch.from_numpy(maml.module.codebook.theta.clone().detach().numpy()))
         opt_maml_model = optim.Adam(model_maml.parameters(),lr=fast_lr, betas=(0.9,0.999), amsgrad=False)
-        train_loss_maml = train_est_h((x_train,y_train), model_maml, opt_maml_model, loss_fn, update_step)
+        train_loss_maml = train_est_h((x_train,y_train), model_maml, opt_maml_model, loss_fn, update_step, h_est_force_z)
         maml_theta = model_maml.codebook.theta.clone().detach().numpy()
         maml_codebook = np.exp(1j*maml_theta)/np.sqrt(num_antenna)       
         
         model_scratch = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
         opt_scratch_model = optim.Adam(model_scratch.parameters(),lr=fast_lr, betas=(0.9,0.999), amsgrad=False)
-        train_loss_scratch = train_est_h((x_train,y_train), model_scratch, opt_scratch_model, loss_fn, update_step)
+        train_loss_scratch = train_est_h((x_train,y_train), model_scratch, opt_scratch_model, loss_fn, update_step, h_est_force_z)
         scratch_theta = model_scratch.codebook.theta.clone().detach().numpy()
         scratch_codebook = np.exp(1j*scratch_theta)/np.sqrt(num_antenna)
         
