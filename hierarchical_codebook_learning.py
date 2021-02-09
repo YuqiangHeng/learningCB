@@ -12,14 +12,15 @@ import torch.utils.data
 import torch.optim as optim
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
-from beam_utils import GaussianCenters, DFT_codebook, DFT_codebook_blockmatrix, bf_gain_loss
+from beam_utils import GaussianCenters, DFT_codebook, DFT_codebook_blockmatrix, bf_gain_loss, plot_codebook_pattern, DFT_beam
 
 np.random.seed(7)
-n_narrow_beams = [128, 128, 128, 128]
-n_wide_beams = [8, 16, 24, 32]
+n_narrow_beams = [128, 128, 128, 128, 128, 128]
+n_wide_beams = [4, 6, 8, 10, 12, 16]
 # num_of_beams = [32]
 n_antenna = 64
 antenna_sel = np.arange(n_antenna)
+nepoch = 200
 
 # Training and testing data:
 # --------------------------
@@ -67,30 +68,13 @@ train_loader = torch.utils.data.DataLoader(train, batch_size = batch_size, shuff
 val_loader = torch.utils.data.DataLoader(val, batch_size = batch_size, shuffle = False)
 test_loader = torch.utils.data.DataLoader(test, batch_size = batch_size, shuffle = False)
 
-class AnalogBeamformer(nn.Module):
-    def __init__(self, n_antenna, n_beam):
-        super(AnalogBeamformer, self).__init__()
-        self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna))
-        self.beam_selection = PowerPooling(2*n_beam)
-    def forward(self, x):
-        bf_signal = self.codebook(x)
-        bf_power_sel = self.beam_selection(bf_signal)
-        return bf_power_sel
-
-class Self_Supervised_AnalogBeamformer(nn.Module):
-    def __init__(self, n_antenna, n_beam):
-        super(Self_Supervised_AnalogBeamformer, self).__init__()
-        self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_beam, scale=np.sqrt(n_antenna))
-        self.compute_power = ComputePower(2*n_beam)
-    def forward(self, x):
-        bf_signal = self.codebook(x)
-        bf_power = self.compute_power(bf_signal)
-        return bf_power
-
 class Beam_Classifier(nn.Module):
     def __init__(self, n_antenna, n_wide_beam, n_narrow_beam, trainable_codebook = True):
         super(Beam_Classifier, self).__init__()
         self.trainable_codebook = trainable_codebook
+        self.n_antenna = n_antenna
+        self.n_wide_beam = n_wide_beam
+        self.n_narrow_beam = n_narrow_beam
         if trainable_codebook:
             self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_wide_beam, scale=np.sqrt(n_antenna))
         else:
@@ -112,8 +96,13 @@ class Beam_Classifier(nn.Module):
         out = self.relu(bf_power)
         out = self.relu(self.dense1(out))
         out = self.relu(self.dense2(out))
-        out = self.relu(self.dense3(out))
+        out = self.dense3(out)
         return out
+    def get_codebook(self) -> np.ndarray:
+        if self.trainable_codebook:
+            return self.codebook.get_weights().detach().clone().numpy()
+        else:
+            return DFT_codebook(nseg=self.n_wide_beam,n_antenna=self.n_antenna).T
     
 
 def fit(model, train_loader, val_loader, opt, loss_fn, EPOCHS):
@@ -171,10 +160,16 @@ def eval_model(model, test_loader, loss_fn):
 
 dft_codebook_acc = []
 learnable_codebook_acc = []
+dft_codebook_topk_gain = []
+learned_codebook_topk_gain= []
+optimal_gains = []
+learned_codebooks = []
+dft_codebooks = []
 for n_nb, n_wb in zip(n_narrow_beams,n_wide_beams):
     print('{} Wide Beams, {} Narrow Beams.'.format(n_wb,n_nb))
     dft_nb_codebook = DFT_codebook(nseg=n_nb,n_antenna=n_antenna)
     label = np.argmax(np.power(np.absolute(np.matmul(h_scaled, dft_nb_codebook.conj().T)),2),axis=1)
+    soft_label = np.power(np.absolute(np.matmul(h, dft_nb_codebook.conj().T)),2)
 
     x_train,y_train = h_concat_scaled[train_idc,:],label[train_idc]
     x_val,y_val = h_concat_scaled[val_idc,:],label[val_idc]
@@ -196,24 +191,110 @@ for n_nb, n_wb in zip(n_narrow_beams,n_wide_beams):
     
     learnable_codebook_model = Beam_Classifier(n_antenna=n_antenna,n_wide_beam=n_wb,n_narrow_beam=n_nb,trainable_codebook=True)
     learnable_codebook_opt = optim.Adam(learnable_codebook_model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
-    train_loss_hist, val_loss_hist = fit(learnable_codebook_model, train_loader, val_loader, learnable_codebook_opt, nn.CrossEntropyLoss(), 100)     
+    train_loss_hist, val_loss_hist = fit(learnable_codebook_model, train_loader, val_loader, learnable_codebook_opt, nn.CrossEntropyLoss(), nepoch)  
+    plt.figure()
+    plt.plot(train_loss_hist,label='training loss')
+    plt.plot(val_loss_hist,label='validation loss')
+    plt.legend()
+    plt.title('Trainable codebook loss hist: {} wb {} nb'.format(n_wb,n_nb))
+    plt.show()
     learnable_codebook_test_loss,learnable_codebook_test_acc = eval_model(learnable_codebook_model,test_loader,nn.CrossEntropyLoss()) 
     learnable_codebook_acc.append(learnable_codebook_test_acc)
+    y_test_predict_learnable_codebook = learnable_codebook_model(torch_x_test.float()).detach().numpy()
+    topk_sorted_test_learned_codebook = (-y_test_predict_learnable_codebook).argsort()
+    topk_bf_gain_learnable_codebook = []
+    for ue_bf_gain, pred_sort in zip(soft_label[test_idc,:],topk_sorted_test_learned_codebook):
+        topk_gains = [ue_bf_gain[pred_sort[:k]].max() for k in range(1,11)]
+        topk_bf_gain_learnable_codebook.append(topk_gains)
+    topk_bf_gain_learnable_codebook = np.array(topk_bf_gain_learnable_codebook)
+    learned_codebook_topk_gain.append(topk_bf_gain_learnable_codebook)
+    learned_codebooks.append(learnable_codebook_model.get_codebook()) 
 
     
     dft_codebook_model = Beam_Classifier(n_antenna=n_antenna,n_wide_beam=n_wb,n_narrow_beam=n_nb,trainable_codebook=False)
     dft_codebook_opt = optim.Adam(dft_codebook_model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
-    train_loss_hist, val_loss_hist = fit(dft_codebook_model, train_loader, val_loader, dft_codebook_opt, nn.CrossEntropyLoss(), 100)
+    train_loss_hist, val_loss_hist = fit(dft_codebook_model, train_loader, val_loader, dft_codebook_opt, nn.CrossEntropyLoss(), nepoch)
+    plt.figure()
+    plt.plot(train_loss_hist,label='training loss')
+    plt.plot(val_loss_hist,label='validation loss')
+    plt.legend()
+    plt.title('DFT codebook loss hist: {} wb {} nb'.format(n_wb,n_nb))
+    plt.show()
     dft_codebook_test_loss,dft_codebook_test_acc = eval_model(dft_codebook_model,test_loader,nn.CrossEntropyLoss()) 
     dft_codebook_acc.append(dft_codebook_test_acc)
+    y_test_predict_dft_codebook = dft_codebook_model(torch_x_test.float()).detach().numpy()
+    topk_sorted_test_dft_codebook = (-y_test_predict_dft_codebook).argsort()
+    topk_bf_gain_dft_codebook = []
+    for ue_bf_gain, pred_sort in zip(soft_label[test_idc,:],topk_sorted_test_dft_codebook):
+        topk_gains = [ue_bf_gain[pred_sort[:k]].max() for k in range(1,11)]
+        topk_bf_gain_dft_codebook.append(topk_gains)
+    topk_bf_gain_dft_codebook = np.array(topk_bf_gain_dft_codebook)
+    dft_codebook_topk_gain.append(topk_bf_gain_dft_codebook)
+    dft_codebooks.append(dft_codebook_model.get_codebook())
     
+    optimal_gains.append(soft_label[test_idc,:].max(axis=-1))
+
+dft_codebook_topk_gain = np.array(dft_codebook_topk_gain)
+learned_codebook_topk_gain = np.array(learned_codebook_topk_gain)
+optimal_gains = np.array(optimal_gains)
+
+dft_codebook_topk_snr = 30 + 10*np.log10(dft_codebook_topk_gain) + 94 -13
+learned_codebook_topk_snr = 30 + 10*np.log10(learned_codebook_topk_gain) + 94 -13
+optimal_snr = 30 + 10*np.log10(optimal_gains) + 94 -13
+
 plt.figure(figsize=(8,6))
-plt.plot(n_wide_beams,learnable_codebook_acc,marker='s',label='learned codebook')
+plt.plot(n_wide_beams,learnable_codebook_acc,marker='s',label='Trainable codebook')
 plt.plot(n_wide_beams,dft_codebook_acc,marker='+',label='DFT codebook')
 plt.legend()
-plt.xlabel('number of wide beams')
-plt.ylabel('acc')
-plt.title('Acc. of predicting the optimal narrow beam (out of {})'.format(n_narrow_beams[0]))
+plt.xticks(n_wide_beams)
+plt.xlabel('number of probe beams')
+plt.ylabel('Accuracy')
+plt.title('Optimal narrow beam prediction accuracy')
 plt.show()
 
+# plt.figure(figsize=(8,6))
+# for k in [0,2]:
+#     plt.plot(n_wide_beams,learned_codebook_topk_gain[:,k]*(norm_factor**2),marker='s',label='learned codebook, k={}'.format(k+1))
+#     plt.plot(n_wide_beams,dft_codebook_topk_gain[:,k]*(norm_factor**2),marker='+',label='DFT codebook, k={}'.format(k+1))
+# plt.plot(n_wide_beams,np.array(optimal_gains)*(norm_factor**2),marker='o', label='Optimal') 
+# plt.xticks(n_wide_beams)
+# plt.legend()
+# plt.xlabel('number of probe beams')
+# plt.ylabel('BF gain')
+# plt.title('BF gain of top-k predicted beam')
+# plt.show()
 
+plt.figure(figsize=(8,6))
+for k in [0,2]:
+    plt.plot(n_wide_beams,learned_codebook_topk_snr[:,:,k].mean(axis=1),marker='s',label='Trainable codebook, k={}'.format(k+1))
+    plt.plot(n_wide_beams,dft_codebook_topk_snr[:,:,k].mean(axis=1),marker='+',label='DFT codebook, k={}'.format(k+1))
+plt.plot(n_wide_beams,optimal_snr.mean(axis=1),marker='o', label='Optimal') 
+plt.xticks(n_wide_beams)
+plt.legend()
+plt.xlabel('number of probe beams')
+plt.ylabel('Avg. SNR (db)')
+plt.title('SNR of top-k predicted beams')
+plt.show()
+
+for iwb,nwb in enumerate(n_wide_beams):
+    plt.figure(figsize=(8,6))
+    for k in [0,2]:
+        plt.hist(learned_codebook_topk_snr[iwb,:,k], bins=100, density=True, cumulative=True, histtype='step', label='Trainable codebook, k={}'.format(k+1))
+        plt.hist(dft_codebook_topk_snr[iwb,:,k], bins=100, density=True, cumulative=True, histtype='step', label='DFT codebook, k={}'.format(k+1))
+    plt.hist(optimal_snr[iwb,:], bins=100, density=True, cumulative=True, histtype='step', label='Optimal') 
+    plt.legend()
+    plt.ylabel('CDF')
+    plt.xlabel('SNR (dB)')
+    plt.title('CDF of SNR of top-k predicted beams, number of probe beams = {}'.format(nwb))
+    plt.show()
+
+
+for i,N in enumerate(n_wide_beams):     
+    fig,ax = plot_codebook_pattern(learned_codebooks[i].T)
+    ax.set_title('Trainable {}-Beam Codebook'.format(N))
+    fig,ax = plot_codebook_pattern(dft_codebooks[i].T)
+    ax.set_title('DFT {}-Beam Codebook'.format(N))
+
+for i,N in enumerate(n_wide_beams):  
+    np.save('probe_trainable_codebook_{}_beam.npy'.format(N),learned_codebooks[i].T)
+    np.save('probe_DFT_codebook_{}_beam.npy'.format(N),dft_codebooks[i].T)

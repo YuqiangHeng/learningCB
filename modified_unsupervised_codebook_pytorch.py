@@ -7,23 +7,23 @@ Created on Mon Jan  4 20:32:27 2021
 
 import numpy as np
 import matplotlib.pyplot as plt
-from ComplexLayers_Torch import PhaseShifter, PowerPooling, ComputePower
+from ComplexLayers_Torch import PhaseShifter, PowerPooling, ComputePower, Hybrid_Beamformer, ComputePower_DoubleBatch
 import torch.utils.data
 import torch.optim as optim
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
-from beam_utils import GaussianCenters, DFT_codebook
+from beam_utils import GaussianCenters, DFT_codebook, plot_codebook_pattern, bf_gain_loss
 
 np.random.seed(7)
 num_of_beams = [8, 16, 24, 32, 64, 96, 128]
 # num_of_beams = [32]
-num_antenna = 64
-antenna_sel = np.arange(num_antenna)
+n_antenna = 64
+antenna_sel = np.arange(n_antenna)
 
 # Training and testing data:
 # --------------------------
 batch_size = 500
-nepoch = 100
+nepoch = 20
 
 h_est_force_z = False #
 #-------------------------------------------#
@@ -61,7 +61,7 @@ norm_factor = np.max(abs(h))
 h_scaled = h/norm_factor
 h_concat_scaled = np.concatenate((h_real/norm_factor,h_imag/norm_factor),axis=1)
 # Compute EGC gain
-egc_gain_scaled = np.power(np.sum(abs(h_scaled),axis=1),2)/num_antenna
+egc_gain_scaled = np.power(np.sum(abs(h_scaled),axis=1),2)/n_antenna
 train_idc, test_idc = train_test_split(np.arange(h.shape[0]),test_size=0.4)
 val_idc, test_idc = train_test_split(test_idc,test_size=0.5)
 x_train,y_train = h_concat_scaled[train_idc,:],egc_gain_scaled[train_idc]
@@ -122,9 +122,22 @@ class Self_Supervised_AnalogBeamformer(nn.Module):
             diff = z - bf_power.detach().clone()
             bf_power = bf_power + diff
         return bf_power
+    
+class Hybrid_BF(nn.Module):
+    def __init__(self, n_antenna, n_beam, n_rf, n_stream = 1):
+        super(Hybrid_BF, self).__init__()
+        self.hybrid_codebook = Hybrid_Beamformer(n_antenna=n_antenna, n_beam=n_beam, n_rf=n_rf, n_stream=n_stream)
+        self.n_antenna = n_antenna
+        self.n_beam = n_beam
+        self.n_rf = n_rf
+        self.n_stream = n_stream
+        self.compute_power = ComputePower_DoubleBatch(2*n_stream)
 
-def bf_gain_loss(y_pred, y_true):
-    return -torch.mean(y_pred,dim=0)
+        
+    def forward(self, x):
+        bf_signal = self.hybrid_codebook(x)
+        bf_gain = self.compute_power(bf_signal)
+        return torch.max(bf_gain, dim=-1)[0].unsqueeze(-1)    
 
 def fit(model, train_loader, val_loader, opt, loss_fn, EPOCHS):
     optimizer = opt
@@ -167,9 +180,9 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
         train_loss = 0
         for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
             theta = model.codebook.theta.detach().clone().numpy()
-            learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+            learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
             x_batch_np = X_batch.detach().clone().numpy()
-            x_batch_complex = x_batch_np[:,:num_antenna] + 1j*x_batch_np[:,num_antenna:]
+            x_batch_complex = x_batch_np[:,:n_antenna] + 1j*x_batch_np[:,n_antenna:]
             # z = np.matmul(x_batch_complex, learned_codebook.conj())
             # h_est = np.matmul(np.linalg.pinv(learned_codebook.conj().T),z)
             z = learned_codebook.conj().T @ x_batch_complex.T
@@ -191,9 +204,9 @@ def fit_genius(model:AnalogBeamformer, train_loader, val_loader, opt, loss_fn, E
         val_loss = 0
         for batch_idx, (X_batch, y_batch) in enumerate(val_loader):
             theta = model.codebook.theta.detach().clone().numpy()
-            learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+            learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
             x_batch_np = X_batch.detach().clone().numpy()
-            x_batch_complex = x_batch_np[:,:num_antenna] + 1j*x_batch_np[:,num_antenna:]
+            x_batch_complex = x_batch_np[:,:n_antenna] + 1j*x_batch_np[:,n_antenna:]
             # z = np.matmul(x_batch_complex, learned_codebook.conj())
             # h_est = np.matmul(np.linalg.pinv(learned_codebook.conj().T),z)
             z = learned_codebook.conj().T @ x_batch_complex.T
@@ -223,9 +236,9 @@ def fit_self_supervised(model:Self_Supervised_AnalogBeamformer, train_loader, va
         train_loss = 0
         for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
             theta = model.codebook.theta.detach().clone().numpy()
-            learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+            learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
             x_batch_np = X_batch.detach().clone().numpy()
-            x_batch_complex = x_batch_np[:,:num_antenna] + 1j*x_batch_np[:,num_antenna:]
+            x_batch_complex = x_batch_np[:,:n_antenna] + 1j*x_batch_np[:,n_antenna:]
             z = learned_codebook.conj().T @ x_batch_complex.T
             h_est = np.linalg.pinv(learned_codebook.conj().T) @ z
             h_est_cat = np.concatenate((h_est.real, h_est.imag),axis=0)
@@ -245,9 +258,9 @@ def fit_self_supervised(model:Self_Supervised_AnalogBeamformer, train_loader, va
         val_loss = 0
         for batch_idx, (X_batch, y_batch) in enumerate(val_loader):
             theta = model.codebook.theta.detach().clone().numpy()
-            learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+            learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
             x_batch_np = X_batch.detach().clone().numpy()
-            x_batch_complex = x_batch_np[:,:num_antenna] + 1j*x_batch_np[:,num_antenna:]
+            x_batch_complex = x_batch_np[:,:n_antenna] + 1j*x_batch_np[:,n_antenna:]
             # z = np.matmul(x_batch_complex, learned_codebook.conj())
             # h_est = np.matmul(np.linalg.pinv(learned_codebook.conj().T),z)
             z = learned_codebook.conj().T @ x_batch_complex.T
@@ -278,7 +291,7 @@ for i,N in enumerate(num_of_beams):
     
     # Model:
     # ------
-    model = Self_Supervised_AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
+    model = Self_Supervised_AnalogBeamformer(n_antenna = n_antenna, n_beam = N)
     # Training:
     # ---------
     opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
@@ -295,15 +308,7 @@ for i,N in enumerate(num_of_beams):
     # Extract learned codebook:
     # -------------------------
     theta = model.codebook.theta.detach().clone().numpy()
-    print(theta.shape)
-    # name_of_file = 'theta_NLOS' + str(N) + 'vec.mat'
-    # scio.savemat(name_of_file,
-    #              {'train_inp': train_inp,
-    #               'train_out': train_out,
-    #               'val_inp': val_inp,
-    #               'val_out': val_out,
-    #               'codebook': theta})
-    learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+    learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
     learned_codebooks_self_supervised.append(learned_codebook)
     learned_codebook_gains_self_supervised[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
 learned_codebook_gains_self_supervised = 10*np.log10(learned_codebook_gains_self_supervised)
@@ -319,7 +324,7 @@ for i,N in enumerate(num_of_beams):
 
     # Model:
     # ------
-    model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
+    model = AnalogBeamformer(n_antenna = n_antenna, n_beam = N)
     # Training:
     # ---------
     opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
@@ -336,15 +341,7 @@ for i,N in enumerate(num_of_beams):
     # Extract learned codebook:
     # -------------------------
     theta = model.codebook.theta.detach().clone().numpy()
-    print(theta.shape)
-    # name_of_file = 'theta_NLOS' + str(N) + 'vec.mat'
-    # scio.savemat(name_of_file,
-    #              {'train_inp': train_inp,
-    #               'train_out': train_out,
-    #               'val_inp': val_inp,
-    #               'val_out': val_out,
-    #               'codebook': theta})
-    learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+    learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
     learned_codebooks_genius.append(learned_codebook)
     learned_codebook_gains_genius[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
 learned_codebook_gains_genius = 10*np.log10(learned_codebook_gains_genius)
@@ -359,7 +356,7 @@ for i,N in enumerate(num_of_beams):
 
     # Model:
     # ------
-    model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
+    model = AnalogBeamformer(n_antenna = n_antenna, n_beam = N)
     # Training:
     # ---------
     opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
@@ -376,18 +373,40 @@ for i,N in enumerate(num_of_beams):
     # Extract learned codebook:
     # -------------------------
     theta = model.codebook.theta.detach().clone().numpy()
-    print(theta.shape)
-    # name_of_file = 'theta_NLOS' + str(N) + 'vec.mat'
-    # scio.savemat(name_of_file,
-    #              {'train_inp': train_inp,
-    #               'train_out': train_out,
-    #               'val_inp': val_inp,
-    #               'val_out': val_out,
-    #               'codebook': theta})
-    learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+    learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
     learned_codebooks.append(learned_codebook)
     learned_codebook_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
 learned_codebook_gains = 10*np.log10(learned_codebook_gains)
+
+# ------------------------------------------------------------------
+# Hybrid Codebook learning using H, directly GD on max(bf power)
+# ------------------------------------------------------------------
+learned_codebook_gains_hybrid = np.zeros((len(num_of_beams),len(test_idc)))
+learned_codebooks_hybrid = []
+for i,N in enumerate(num_of_beams):
+    print(str(N) + '-beams Codebook')
+
+    # Model:
+    # ------
+    model = Hybrid_BF(n_antenna=n_antenna, n_beam=N, n_rf=4)
+    # Training:
+    # ---------
+    opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
+    
+    train_hist, val_hist = fit(model, train_loader, val_loader, opt, bf_gain_loss, nepoch)    
+
+    plt.figure()
+    plt.plot(-np.array(train_hist),label='train loss')
+    plt.plot(-np.array(val_hist),label='val loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('loss')
+    plt.title('Hybrid GD. {} beams'.format(N))
+    # Extract learned codebook:
+    # -------------------------
+    learned_codebook = model.hybrid_codebook.get_hybrid_weights().squeeze()
+    learned_codebooks_hybrid.append(learned_codebook)
+    learned_codebook_gains_hybrid[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook_gains_hybrid.conj().T)),2),axis=1)
+learned_codebook_gains_hybrid = 10*np.log10(learned_codebook_gains_hybrid)
 
 # ------------------------------------------------------------------
 # Codebook learning using H, GD on MSE of max(bf power) and EGC power
@@ -399,7 +418,7 @@ for i,N in enumerate(num_of_beams):
 
     # Model:
     # ------
-    model = AnalogBeamformer(n_antenna = num_antenna, n_beam = N)
+    model = AnalogBeamformer(n_antenna = n_antenna, n_beam = N)
     # Training:
     # ---------
     opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
@@ -416,15 +435,7 @@ for i,N in enumerate(num_of_beams):
     # Extract learned codebook:
     # -------------------------
     theta = model.codebook.theta.detach().clone().numpy()
-    print(theta.shape)
-    # name_of_file = 'theta_NLOS' + str(N) + 'vec.mat'
-    # scio.savemat(name_of_file,
-    #              {'train_inp': train_inp,
-    #               'train_out': train_out,
-    #               'val_inp': val_inp,
-    #               'val_out': val_out,
-    #               'codebook': theta})
-    learned_codebook = np.exp(1j*theta)/np.sqrt(num_antenna)
+    learned_codebook = np.exp(1j*theta)/np.sqrt(n_antenna)
     learned_codebooks_supervised.append(learned_codebook)
     learned_codebook_gains_supervised[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], learned_codebook.conj())),2),axis=1)
 learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervised)
@@ -435,21 +446,21 @@ learned_codebook_gains_supervised = 10*np.log10(learned_codebook_gains_supervise
 #-------------------------------------------#    
 dft_gains = np.zeros((len(num_of_beams),len(test_idc)))
 for i, nbeams in enumerate(num_of_beams):
-    dft_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], np.transpose(np.conj(DFT_codebook(nbeams,num_antenna))))),2),axis=1)
+    dft_gains[i,:] = np.max(np.power(np.absolute(np.matmul(h[test_idc,:], np.transpose(np.conj(DFT_codebook(nbeams,n_antenna))))),2),axis=1)
 dft_gains = 10*np.log10(dft_gains)
 
-fig,ax = plt.subplots(figsize=(8,6))
-for i in range(len(num_of_beams)):
-    ax.hist(learned_codebook_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook unsupervised, {} beams'.format(num_of_beams[i]))    
-    ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook supervised, {} beams'.format(num_of_beams[i]))
-    ax.hist(dft_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='DFT codebook,{} beams'.format(num_of_beams[i]))
-# tidy up the figure
-ax.grid(True)
-ax.legend(loc='upper left')
-#ax.set_title('Cumulative step histograms')
-ax.set_xlabel('BF Gain (dB)')
-ax.set_ylabel('Emperical CDF')
-plt.show()
+# fig,ax = plt.subplots(figsize=(8,6))
+# for i in range(len(num_of_beams)):
+#     ax.hist(learned_codebook_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook unsupervised, {} beams'.format(num_of_beams[i]))    
+#     ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='learned codebook supervised, {} beams'.format(num_of_beams[i]))
+#     ax.hist(dft_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='DFT codebook,{} beams'.format(num_of_beams[i]))
+# # tidy up the figure
+# ax.grid(True)
+# ax.legend(loc='upper left')
+# #ax.set_title('Cumulative step histograms')
+# ax.set_xlabel('BF Gain (dB)')
+# ax.set_ylabel('Emperical CDF')
+# plt.show()
 
 for i, N in enumerate(num_of_beams):
     fig,ax = plt.subplots(figsize=(8,6))
@@ -457,6 +468,7 @@ for i, N in enumerate(num_of_beams):
     ax.hist(learned_codebook_gains_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='Supervised (EGC)')
     ax.hist(learned_codebook_gains_genius[i,:],bins=100,density=True,cumulative=True,histtype='step',label='GD, est h')
     ax.hist(learned_codebook_gains_self_supervised[i,:],bins=100,density=True,cumulative=True,histtype='step',label='Self-supervised')
+    ax.hist(learned_codebook_gains_hybrid[i,:],bins=100,density=True,cumulative=True,histtype='step',label='GD, full h, hybrid')
     ax.hist(dft_gains[i,:],bins=100,density=True,cumulative=True,histtype='step',label='DFT')
     # tidy up the figure
     ax.grid(True)
@@ -472,6 +484,7 @@ plt.plot(num_of_beams,np.mean(learned_codebook_gains_supervised,axis=1),marker='
 plt.plot(num_of_beams,np.mean(learned_codebook_gains_self_supervised,axis=1),marker='s',label='Self-supervised')
 plt.plot(num_of_beams,np.mean(learned_codebook_gains,axis=1),marker='o',label='GD, full h')
 plt.plot(num_of_beams,np.mean(learned_codebook_gains_genius,axis=1),marker='x',label='GD, est h')
+plt.plot(num_of_beams,np.mean(learned_codebook_gains_hybrid,axis=1),marker='*',label='GD, hybrid')
 plt.plot(num_of_beams,np.mean(dft_gains,axis=1),marker='D',label='DFT')
 plt.legend()
 plt.xticks(num_of_beams, num_of_beams)
@@ -479,17 +492,28 @@ plt.grid(True)
 plt.xlabel('number of beams')
 plt.ylabel('avg BF gain (dB)')
 plt.show()
-
-percentile = 5
-plt.figure(figsize=(8,6))
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains_supervised,q=percentile,axis=1),marker='+',label='Supervised (EGC)')
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains_self_supervised,q=percentile,axis=1),marker='s',label='Self-supervised')
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains,q=percentile,axis=1),marker='o',label='GD, full h')
-plt.plot(num_of_beams,np.percentile(learned_codebook_gains_genius,q=percentile,axis=1),marker='x',label='GD, est h')
-plt.plot(num_of_beams,np.percentile(dft_gains,q=percentile,axis=1),marker='D',label='DFT')
-plt.legend()
-plt.xticks(num_of_beams, num_of_beams)
-plt.grid(True)
-plt.xlabel('number of beams')
-plt.ylabel('{}-percentile BF gain (dB)'.format(percentile))
-plt.show()
+        
+for i,N in enumerate(num_of_beams):     
+        fig,ax = plot_codebook_pattern(learned_codebooks_self_supervised[i].T)
+        ax.set_title('Self-supervised {}-Beam Codebook'.format(N))
+        fig,ax = plot_codebook_pattern(learned_codebooks_genius[i].T)
+        ax.set_title('GD w/. est. H {}-Beam Codebook'.format(N))
+        fig,ax = plot_codebook_pattern(learned_codebooks[i].T)
+        ax.set_title('GD {}-Beam Codebook'.format(N))        
+        fig,ax = plot_codebook_pattern(learned_codebooks_supervised[i].T)
+        ax.set_title('Supervised {}-Beam Codebook'.format(N))
+        fig,ax = plot_codebook_pattern(learned_codebooks_hybrid[i])
+        ax.set_title('Hybrid {}-Beam Codebook'.format(N))
+# percentile = 5
+# plt.figure(figsize=(8,6))
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains_supervised,q=percentile,axis=1),marker='+',label='Supervised (EGC)')
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains_self_supervised,q=percentile,axis=1),marker='s',label='Self-supervised')
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains,q=percentile,axis=1),marker='o',label='GD, full h')
+# plt.plot(num_of_beams,np.percentile(learned_codebook_gains_genius,q=percentile,axis=1),marker='x',label='GD, est h')
+# plt.plot(num_of_beams,np.percentile(dft_gains,q=percentile,axis=1),marker='D',label='DFT')
+# plt.legend()
+# plt.xticks(num_of_beams, num_of_beams)
+# plt.grid(True)
+# plt.xlabel('number of beams')
+# plt.ylabel('{}-percentile BF gain (dB)'.format(percentile))
+# plt.show()

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Wed Jan 27 22:36:03 2021
+Created on Tue Feb  2 10:58:53 2021
 
 @author: ethan
 """
@@ -15,11 +15,11 @@ import torch.utils.data
 import torch.optim as optim
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
-from beam_utils import GaussianCenters, DFT_codebook
+from beam_utils import GaussianCenters, DFT_codebook, bf_gain_loss
 import itertools
 from tqdm import tqdm
 
-np.random.seed(11)
+np.random.seed(7)
 n_beam = 4
 n_antenna = 64
 antenna_sel = np.arange(n_antenna)
@@ -27,7 +27,7 @@ antenna_sel = np.arange(n_antenna)
 # Training and testing data:
 # --------------------------
 batch_size = 1
-nepoch = 10
+nepoch = 5
 #-------------------------------------------#
 # Here should be the data_preparing function
 # It is expected to return:
@@ -44,24 +44,22 @@ h = h_real + 1j*h_imag
 norm_factor = np.max(abs(h))
 h_scaled = h/norm_factor
 h_concat_scaled = np.concatenate((h_real/norm_factor,h_imag/norm_factor),axis=1)
-
-target_hard = np.argmax(np.power(np.absolute(np.matmul(h_scaled, DFT_codebook(n_beam,n_antenna).conj().T)),2),axis=1)
-target_softmax = scipy_softmax(np.power(np.absolute(np.matmul(h_scaled, DFT_codebook(n_beam,n_antenna).conj().T)),2),axis=1)
+egc_gain_scaled = np.power(np.sum(abs(h_scaled),axis=1),2)/n_antenna
 
 train_idc, test_idc = train_test_split(np.arange(h.shape[0]),test_size=0.4)
 val_idc, test_idc = train_test_split(test_idc,test_size=0.5)
 
 
-x_train,y_train = h_concat_scaled[train_idc,:],target_hard[train_idc]
-x_val,y_val = h_concat_scaled[val_idc,:],target_hard[val_idc]
-x_test,y_test = h_concat_scaled[test_idc,:],target_hard[test_idc]
+x_train,y_train = h_concat_scaled[train_idc,:],egc_gain_scaled[train_idc]
+x_val,y_val = h_concat_scaled[val_idc,:],egc_gain_scaled[val_idc]
+x_test,y_test = h_concat_scaled[test_idc,:],egc_gain_scaled[test_idc]
 
-torch_x_train = torch.from_numpy(x_train)
-torch_y_train = torch.from_numpy(y_train)
-torch_x_val = torch.from_numpy(x_val)
-torch_y_val = torch.from_numpy(y_val)
-torch_x_test = torch.from_numpy(x_test)
-torch_y_test = torch.from_numpy(y_test)
+torch_x_train = torch.from_numpy(x_train).float()
+torch_y_train = torch.from_numpy(y_train).float()
+torch_x_val = torch.from_numpy(x_val).float()
+torch_y_val = torch.from_numpy(y_val).float()
+torch_x_test = torch.from_numpy(x_test).float()
+torch_y_test = torch.from_numpy(y_test).float()
 
 # Pytorch train and test sets
 train = torch.utils.data.TensorDataset(torch_x_train,torch_y_train)
@@ -82,19 +80,14 @@ class Node(nn.Module):
         self.n_antenna = n_antenna
         self.n_beam = n_beam
         self.compute_power = ComputePower(2*n_beam)
-        self.dense_1 = nn.Linear(in_features = n_beam, out_features = n_beam)
-        self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=1)
         self.parent = None
         self.child = None
         
     def forward(self, x):
         bf_signal = self.analog_codebook(x)
         bf_gain = self.compute_power(bf_signal)
-        # output = self.softmax(self.relu(self.dense_1(bf_gain)))
-        # output = self.softmax(bf_gain)
-        output = bf_gain/bf_gain.sum()
-        return output
+        log_bf_gain = torch.log(bf_gain)
+        return log_bf_gain
 
     def set_child(self, child):
         self.child = child
@@ -109,48 +102,10 @@ class Node(nn.Module):
         return self.parent
     
     def is_leaf(self):
-        return False
+        return (self.get_child() is None) and (not self.get_parent() is None)
     
     def is_root(self):
-        return self.get_child() is None
-    
-class Leaf(nn.Module):
-    def __init__(self, n_antenna, azimuths, idx):
-        super(Leaf, self).__init__()
-        self.analog_codebook = DFT_Codebook_Layer(n_antenna=n_antenna, azimuths=azimuths)
-        self.n_beam = len(azimuths)
-        self.azimuths = azimuths
-        self.n_antenna = n_antenna
-        self.idx = idx
-        self.compute_power = ComputePower(2*self.n_beam)
-        self.softmax = nn.Softmax(dim=1)
-        self.parent = None
-        self.child = None
-        
-    def forward(self, x):
-        bf_signal = self.analog_codebook(x)
-        bf_gain = self.compute_power(bf_signal)
-        # output = self.softmax(bf_gain)
-        output = bf_gain/bf_gain.sum()
-        return output   
-            
-    def set_parent(self, parent):
-        self.parent = parent
-        
-    def get_idx(self):
-        return self.idx
-    
-    def get_child(self):
-        return self.child
-    
-    def get_parent(self):
-        return self.parent
-    
-    def is_leaf(self):
-        return True
-    
-    def is_node(self):
-        return False
+        return (self.get_child() is None) and (self.get_parent() is None)
     
 class Beam_Search_Tree(nn.Module):
     def __init__(self, n_antenna, n_narrow_beam, k):
@@ -160,18 +115,13 @@ class Beam_Search_Tree(nn.Module):
         self.k = k #number of beams per branch per layer
         self.n_layer = int(math.log(n_narrow_beam,k))
         self.n_narrow_beam = n_narrow_beam
-        # self.DFT_azimuth = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),n_narrow_beam)) # azimuth angles for the leaf DFT narrow beams
-        bw = np.pi/n_narrow_beam
-        self.DFT_azimuth = np.arccos(np.linspace(np.cos(0+bw/2),np.cos(np.pi-bw/2-1e-6),n_narrow_beam))
+        self.DFT_azimuth = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),n_narrow_beam)) # azimuth angles for the leaf DFT narrow beams
         self.beam_search_candidates = []
         for l in range(self.n_layer):
             self.beam_search_candidates.append([])
         self.nodes = []
         for l in range(self.n_layer):
-            if l < self.n_layer-1:
-                nodes_cur_layer = [Node(n_antenna=n_antenna,n_beam = k) for i in range(k**l)]
-            else:
-                nodes_cur_layer = [Leaf(n_antenna=n_antenna,azimuths = self.DFT_azimuth[i*k:(i+1)*k], idx = np.arange(i*k,(i+1)*k)) for i in range(k**l)]
+            nodes_cur_layer = [Node(n_antenna=n_antenna,n_beam = k) for i in range(k**l)]
             self.nodes.append(nodes_cur_layer)
             if l > 0:
                 parent_nodes = self.nodes[l-1]
@@ -184,123 +134,94 @@ class Beam_Search_Tree(nn.Module):
         self.all_paths = {i:j for (i,j) in enumerate(itertools.product(np.arange(k),repeat=self.n_layer))}
         
             
-    def single_path_forward(self, xbatch):
+    def forward(self, xbatch):
         bsize, in_dim = xbatch.shape
-        prob_batch = []
-        beam_batch = []
+        bf_gain_batch = []
         for b_idx in range(bsize):
             x = torch.index_select(xbatch, 0, torch.Tensor([b_idx]).long())
             cur_node = self.root
-            post_prob = torch.Tensor([1])
             while not cur_node.is_leaf():
-                prob = cur_node(x)
-                next_node_idx = torch.argmax(prob,dim=1).item()
-                next_node_prob, next_node_idx = torch.max(prob,dim=1)
-                post_prob = post_prob * next_node_prob
+                bf_gain = cur_node(x)
+                next_node_gain, next_node_idx = torch.max(bf_gain,dim=1)
                 cur_node = cur_node.get_child()[next_node_idx.item()]
-            prob = cur_node(x)
-            next_node_prob, next_node_idx = torch.max(prob,dim=1)
-            post_prob = post_prob * next_node_prob
-            max_beam = cur_node.get_idx()[next_node_idx.item()]
-            prob_batch.append(post_prob)
-            beam_batch.append(max_beam)
-        prob_batch = torch.cat(tuple(prob_batch))
-        beam_batch = torch.from_numpy(np.array(beam_batch)).int()
-        return prob_batch, beam_batch
+            bf_gain = cur_node(x)
+            next_node_gain, next_node_idx = torch.max(bf_gain,dim=1)
+            bf_gain_batch.append(next_node_gain)
+        bf_gain_batch = torch.cat(tuple(bf_gain_batch))
+        return bf_gain_batch
 
     def forward_path(self, x, path):
         # path is iterable specifying the path (hence the leaf)
         # x is a single data point: 1 x in_dim
         cur_node = self.root
-        post_prob = torch.Tensor([1])
         p_i = 0
         while not cur_node.is_leaf():
-            prob = cur_node(x)
+            bf_gain = cur_node(x)
             next_node_idx = path[p_i]
-            next_node_prob = torch.index_select(prob, 1, torch.Tensor([next_node_idx]).long())
-            post_prob = post_prob * next_node_prob
             cur_node = cur_node.get_child()[next_node_idx]      
             p_i += 1
-        prob = cur_node(x)
+        bf_gain = cur_node(x)
         next_node_idx = path[p_i]
-        next_node_prob = torch.index_select(prob, 1, torch.Tensor([next_node_idx]).long())
-        post_prob = post_prob * next_node_prob
-        return post_prob
+        next_node_gain = torch.index_select(bf_gain, 1, torch.Tensor([next_node_idx]).long())
+        return next_node_gain
     
     def forward_to_leaf(self, x, leaf_idx):
         return self.forward_path(x,self.all_paths[leaf_idx])
                     
     
-    def forward(self, xbatch):
+    def forward_all_path(self, xbatch):
         bsize, in_dim = xbatch.shape
-        prob_batch = []
+        bf_gain_batch = []
         for b_idx in range(bsize):
-            prob = []
+            bf_gain = []
             x = torch.index_select(xbatch, 0, torch.Tensor([b_idx]).long())
             for leaf_idx in range(self.n_narrow_beam):
-                prob.append(self.forward_to_leaf(x,leaf_idx))
-            prob = torch.cat(tuple(prob),dim=1)
-            prob_batch.append(prob)   
-        prob_batch = torch.cat(tuple(prob_batch),dim=0)
-        return prob_batch
+                bf_gain.append(self.forward_to_leaf(x,leaf_idx))
+            bf_gain = torch.cat(tuple(bf_gain),dim=1)
+            bf_gain_batch.append(bf_gain)   
+        bf_gain_batch = torch.cat(tuple(bf_gain_batch),dim=0)
+        return bf_gain_batch
 
 def train_iter(model, train_loader, opt, loss_fn):    
     model.train()
     train_loss = 0
-    train_acc = 0
     with tqdm(train_loader,unit='batch') as tepoch:
         tepoch.set_description('Training')
         for batch_idx, (X_batch, y_batch) in enumerate(tepoch):
-            var_X_batch = X_batch.float()
-            var_y_batch = y_batch.long()
             opt.zero_grad()
-            output = model(var_X_batch)
-            # output = torch.log(output)
-            loss = loss_fn(output, var_y_batch)
+            output = model(X_batch)
+            loss = loss_fn(output, y_batch)
             loss.backward()
             opt.step()
             train_loss += loss.detach().item()
-            batch_acc = (output.argmax(dim=1) == var_y_batch).sum().item()/var_y_batch.shape[0]
-            train_acc += batch_acc
-            tepoch.set_postfix(loss=loss.item(), accuracy = batch_acc)
+            tepoch.set_postfix(loss=loss.item())
     train_loss /= batch_idx + 1
-    train_acc /= batch_idx + 1    
-    return train_loss,train_acc
+    return train_loss
 
 def val_model(model, val_loader, loss_fn):
     model.eval()
     val_loss = 0
-    val_acc = 0
     with tqdm(val_loader,unit='batch') as tepoch:
         tepoch.set_description('Validation')
         for batch_idx, (X_batch, y_batch) in enumerate(tepoch):
-            var_X_batch = X_batch.float()
-            var_y_batch = y_batch.long()  
-            output = model(var_X_batch)
-            output = torch.log(output)
-            loss = loss_fn(output, var_y_batch)
+            output = model(X_batch)
+            loss = loss_fn(output, y_batch)
             val_loss += loss.detach().item()
-            batch_acc = (output.argmax(dim=1) == var_y_batch).sum().item()/var_y_batch.shape[0]
-            val_acc += batch_acc
-            tepoch.set_postfix(loss=loss.item(), accuracy = batch_acc)
+            tepoch.set_postfix(loss=loss.item())
     val_loss /= batch_idx + 1
-    val_acc /= batch_idx + 1
-    return val_loss, val_acc
+    return val_loss
 
 def fit(model, train_loader, val_loader, opt, loss_fn, EPOCHS):
-    train_loss_hist,train_acc_hist,val_loss_hist,val_acc_hist = [],[],[],[]
-    theta_hist = []
+    train_loss_hist,val_loss_hist,theta_hist = [],[],[]
     for epoch in range(EPOCHS):
-        train_loss, train_acc = train_iter(model, train_loader, opt, loss_fn)
-        val_loss, val_acc = val_model(model, val_loader, loss_fn)
+        train_loss = train_iter(model, train_loader, opt, loss_fn)
+        val_loss = val_model(model, val_loader, loss_fn)
         train_loss_hist.append(train_loss)
-        train_acc_hist.append(train_acc)
         val_loss_hist.append(val_loss)
-        val_acc_hist.append(val_acc)
         theta_hist.append(model.root.analog_codebook.theta.detach().clone().numpy())
         if epoch % 1 == 0:
-            print('Epoch : {}, Train: loss = {:.2f}, acc = {:.2f}. Validation: loss = {:.2f}, acc = {:.2f}.'.format(epoch,train_loss,train_acc,val_loss,val_acc))
-    return train_loss_hist, val_loss_hist, theta_hist
+            print('Epoch : {}, Train: loss = {:.2f}. Validation: loss = {:.2f}.'.format(epoch,train_loss,val_loss))
+    return train_loss_hist, val_loss_hist, theta_hist    
 
 # ------------------------------------------------------------------
 #  Training
@@ -312,14 +233,14 @@ print(str(n_beam) + '-beams Codebook')
 # ------
 model = Beam_Search_Tree(n_antenna, n_beam, 2)
 theta_untrained = model.root.analog_codebook.theta.detach().clone().numpy()
-train_loss, train_acc = val_model(model, train_loader, nn.CrossEntropyLoss())
-val_loss, val_acc = val_model(model, val_loader, nn.CrossEntropyLoss())
-print('Before training. Train: loss = {:.2f}, acc = {:.2f}. Validation: loss = {:.2f}, acc = {:.2f}.'.format(train_loss,train_acc,val_loss,val_acc))
+train_loss = val_model(model, train_loader, bf_gain_loss)
+val_loss = val_model(model, val_loader, bf_gain_loss)
+print('Before training. Train: loss = {:.2f}. Validation: loss = {:.2f}.'.format(train_loss,val_loss))
 # Training:
 # ---------
 opt = optim.Adam(model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
 
-train_hist, val_hist, theta_hist = fit(model, train_loader, val_loader, opt, nn.CrossEntropyLoss(), nepoch)    
+train_hist, val_hist, theta_hist = fit(model, train_loader, val_loader, opt, bf_gain_loss, nepoch)    
 
 plt.figure()
 plt.plot(np.array(train_hist),label='train loss')
