@@ -27,7 +27,7 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 
 # n_narrow_beams = [128, 128, 128, 128, 128, 128]
-n_nb = 128
+n_nb = 64
 n_wide_beams = [4, 6, 8, 10, 12, 16]
 n_antenna = 64
 antenna_sel = np.arange(n_antenna)
@@ -35,15 +35,15 @@ antenna_sel = np.arange(n_antenna)
 # --------------------------
 # MAML training parameters
 # --------------------------
-batch_size = 200
+batch_size = 50
 nepoch = 1000
-shots = 1000
+shots = 500
 update_step = 5
 ntest = 50
 nval = 10
 
-fast_lr = 0.5
-meta_lr = 0.5
+fast_lr = 0.3
+meta_lr = 0.3
 
 # --------------------------
 # UE distribution generator parameters (clusters)
@@ -131,7 +131,8 @@ def fast_adapt(batch, learner, loss, adaptation_steps, shots):
     # Evaluate the adapted model
     predictions = learner(evaluation_data)
     valid_error = loss(predictions, evaluation_labels)
-    return valid_error
+    valid_acc = (predictions.detach().clone().argmax(dim=-1) == evaluation_labels).sum().float()/labels.shape[0]
+    return valid_error, valid_acc
         
 dataset = GaussianCenters(possible_loc=loc[:,:2],
                            n_clusters=n_clusters, arrival_rate = arrival_rate, cluster_variance = cluster_variance)
@@ -159,36 +160,39 @@ for n_wb in n_wide_beams:
         optimizer.zero_grad()
         meta_train_error = 0.0
         meta_valid_error = 0.0
+        meta_train_acc = 0.0
+        meta_valid_acc = 0.0
         for task in range(batch_size):
             dataset.change_cluster()
             # Compute meta-training loss
             learner = maml.clone()
             batch_idc = dataset.sample()
             batch = (h_concat_scaled[batch_idc,:],label[batch_idc])
-            evaluation_error = fast_adapt(batch,
-                                        learner,
-                                        loss_fn,
-                                        update_step,
-                                        shots)
+            evaluation_error, evaluation_acc = fast_adapt(batch,
+                                                        learner,
+                                                        loss_fn,
+                                                        update_step,
+                                                        shots)
             evaluation_error.backward()
             meta_train_error += evaluation_error.item()
+            meta_train_acc += evaluation_acc.item()
     
             # Compute meta-validation loss
             learner = maml.clone()
             batch_idc = dataset.sample()
             batch = (h_concat_scaled[batch_idc,:],label[batch_idc])
-            evaluation_error = fast_adapt(batch,
-                                        learner,
-                                        loss_fn,
-                                        update_step,
-                                        shots)
+            evaluation_error, evaluation_acc = fast_adapt(batch,
+                                                        learner,
+                                                        loss_fn,
+                                                        update_step,
+                                                        shots)
             meta_valid_error += evaluation_error.item()
     
         # Print some metrics
         print('\n')
         print('Iteration', iteration)
-        print('Meta Train Loss', meta_train_error / batch_size)
-        print('Meta Valid Loss', meta_valid_error / batch_size)
+        print('Meta Train Loss = {}, Train Acc = {}'.format(meta_train_error/batch_size, meta_train_acc/batch_size))
+        print('Meta Valid Loss = {}, Valid Acc = {}'.format(meta_valid_error/batch_size, meta_valid_acc/batch_size))
     
         # Average the accumulated gradients and optimize
         for p in maml.parameters():
