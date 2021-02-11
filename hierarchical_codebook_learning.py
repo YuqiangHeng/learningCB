@@ -69,14 +69,14 @@ val_loader = torch.utils.data.DataLoader(val, batch_size = batch_size, shuffle =
 test_loader = torch.utils.data.DataLoader(test, batch_size = batch_size, shuffle = False)
 
 class Beam_Classifier(nn.Module):
-    def __init__(self, n_antenna, n_wide_beam, n_narrow_beam, trainable_codebook = True):
+    def __init__(self, n_antenna, n_wide_beam, n_narrow_beam, trainable_codebook = True, theta = None):
         super(Beam_Classifier, self).__init__()
         self.trainable_codebook = trainable_codebook
         self.n_antenna = n_antenna
         self.n_wide_beam = n_wide_beam
         self.n_narrow_beam = n_narrow_beam
         if trainable_codebook:
-            self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_wide_beam, scale=np.sqrt(n_antenna))
+            self.codebook = PhaseShifter(in_features=2*n_antenna, out_features=n_wide_beam, scale=np.sqrt(n_antenna), theta=theta)
         else:
             dft_codebook = DFT_codebook_blockmatrix(n_antenna=n_antenna, nseg=n_wide_beam)
             self.codebook = torch.from_numpy(dft_codebook).float()
