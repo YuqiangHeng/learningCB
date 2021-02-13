@@ -37,13 +37,13 @@ antenna_sel = np.arange(n_antenna)
 # --------------------------
 batch_size = 50
 nepoch = 1000
-shots = 500
-update_step = 5
+shots = 200
+update_step = 1
 ntest = 50
 nval = 10
 
-fast_lr = 0.3
-meta_lr = 0.3
+fast_lr = 0.1
+meta_lr = 0.1
 
 # --------------------------
 # UE distribution generator parameters (clusters)
@@ -187,6 +187,7 @@ for n_wb in n_wide_beams:
                                                         update_step,
                                                         shots)
             meta_valid_error += evaluation_error.item()
+            meta_valid_acc += evaluation_acc.item()
     
         # Print some metrics
         print('\n')
