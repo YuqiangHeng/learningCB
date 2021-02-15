@@ -120,17 +120,27 @@ class GaussianCenters():
         sampled_idc = self.find_closest_ue(sampled_loc)
         return sampled_idc
     
-def DFT_codebook(nseg,n_antenna):
-    bw = np.pi/nseg
-    # bfdirections = np.arccos(np.linspace(np.cos(0+bw/2),np.cos(np.pi-bw/2-1e-6),nseg))
-    bfdirections = np.linspace(0,np.pi,nseg)
+# def DFT_codebook(nseg,n_antenna):
+#     # bw = np.pi/nseg
+#     # bfdirections = np.arccos(np.linspace(np.cos(0+bw/2),np.cos(np.pi-bw/2-1e-6),nseg))
+#     bfdirections = np.linspace(0,np.pi,nseg)
+#     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
+#     for i in range(nseg):
+#         phi = bfdirections[i]
+#         #array response vector original
+#         arr_response_vec = [-1j*np.pi*k*np.cos(phi) for k in range(n_antenna)]
+#         #array response vector for rotated ULA
+#         #arr_response_vec = [1j*np.pi*k*np.sin(phi+np.pi/2) for k in range(64)]
+#         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
+#     return codebook_all
+
+def DFT_codebook(nseg,n_antenna,spacing=0.5):
     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
-    for i in range(nseg):
-        phi = bfdirections[i]
+    thetas = np.linspace(-1/2,1/2,nseg,endpoint=False)
+    azimuths = np.arcsin(1/spacing*thetas)
+    for i,theta in enumerate(azimuths):
         #array response vector original
-        arr_response_vec = [-1j*np.pi*k*np.cos(phi) for k in range(n_antenna)]
-        #array response vector for rotated ULA
-        #arr_response_vec = [1j*np.pi*k*np.sin(phi+np.pi/2) for k in range(64)]
+        arr_response_vec = [-1j*2*np.pi*k*spacing*np.sin(theta) for k in range(n_antenna)]
         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
     return codebook_all
 
@@ -174,11 +184,22 @@ def DFT_codebook_blockmatrix(nseg,n_antenna):
 def bf_gain_loss(y_pred, y_true):
     return -torch.mean(y_pred,dim=0)
 
+# def calc_beam_pattern(beam, resolution = int(1e3), n_antenna = 64, array_type='ULA', k=0.5):
+#     phi_all = np.linspace(0,np.pi,resolution)
+#     array_response_vectors = np.tile(phi_all,(n_antenna,1)).T
+#     # array_response_vectors = 1j*2*np.pi*k*np.sin(array_response_vectors)
+#     array_response_vectors = -1j*2*np.pi*k*np.cos(array_response_vectors)
+#     array_response_vectors = array_response_vectors * np.arange(n_antenna)
+#     array_response_vectors = np.exp(array_response_vectors)/np.sqrt(n_antenna)
+#     gains = abs(array_response_vectors.conj() @ beam)**2
+#     return phi_all, gains
+
 def calc_beam_pattern(beam, resolution = int(1e3), n_antenna = 64, array_type='ULA', k=0.5):
-    phi_all = np.linspace(0,np.pi,resolution)
+    # phi_all = np.linspace(0,np.pi,resolution)
+    phi_all = np.linspace(-np.pi/2,np.pi/2,resolution)
     array_response_vectors = np.tile(phi_all,(n_antenna,1)).T
-    # array_response_vectors = 1j*2*np.pi*k*np.sin(array_response_vectors)
-    array_response_vectors = -1j*2*np.pi*k*np.cos(array_response_vectors)
+    array_response_vectors = -1j*2*np.pi*k*np.sin(array_response_vectors)
+    # array_response_vectors = -1j*2*np.pi*k*np.cos(array_response_vectors)
     array_response_vectors = array_response_vectors * np.arange(n_antenna)
     array_response_vectors = np.exp(array_response_vectors)/np.sqrt(n_antenna)
     gains = abs(array_response_vectors.conj() @ beam)**2

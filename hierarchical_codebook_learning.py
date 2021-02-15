@@ -8,12 +8,12 @@ Created on Mon Jan 18 16:07:04 2021
 import numpy as np
 import scipy.io as sio
 import matplotlib.pyplot as plt
-from ComplexLayers_Torch import PhaseShifter, PowerPooling, ComputePower
+from ComplexLayers_Torch import PhaseShifter, ComputePower
 import torch.utils.data
 import torch.optim as optim
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
-from beam_utils import GaussianCenters, DFT_codebook, DFT_codebook_blockmatrix, bf_gain_loss, plot_codebook_pattern, DFT_beam
+from beam_utils import DFT_codebook, DFT_codebook_blockmatrix, plot_codebook_pattern
 
 np.random.seed(7)
 n_narrow_beams = [128, 128, 128, 128, 128, 128]
@@ -31,25 +31,30 @@ batch_size = 500
 # It is expected to return:
 # train_inp, train_out, val_inp, and val_out
 #-------------------------------------------#
-# h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:,antenna_sel]
-# h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:,antenna_sel]
-# loc = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy')
+h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:,antenna_sel]
+h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:,antenna_sel]
+loc = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy')
 # h_real = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')
 # h_imag = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')
 
-fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_real.mat'
-fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_imag.mat'
-fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/loc.mat'
+# fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_real.mat'
+# fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_imag.mat'
+# fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/loc.mat'
 
-h_real = sio.loadmat(fname_h_real)['h_real']
-h_imag = sio.loadmat(fname_h_imag)['h_imag']
-loc = sio.loadmat(fname_loc)['loc']
+# h_real = sio.loadmat(fname_h_real)['h_real']
+# h_imag = sio.loadmat(fname_h_imag)['h_imag']
+# loc = sio.loadmat(fname_loc)['loc']
 
 h = h_real + 1j*h_imag
+valid_ue_idc = np.array([row_idx for (row_idx,row) in enumerate(np.concatenate((h_real,h_imag),axis=1)) if not all(row==0)])
+h = h[valid_ue_idc]
+h_real = h_real[valid_ue_idc]
+h_imag = h_imag[valid_ue_idc]
 #norm_factor = np.max(np.power(abs(h),2))
 norm_factor = np.max(abs(h))
 h_scaled = h/norm_factor
 h_concat_scaled = np.concatenate((h_real/norm_factor,h_imag/norm_factor),axis=1)
+
 # Compute EGC gain
 egc_gain_scaled = np.power(np.sum(abs(h_scaled),axis=1),2)/n_antenna
 train_idc, test_idc = train_test_split(np.arange(h.shape[0]),test_size=0.4)
