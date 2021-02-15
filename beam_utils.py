@@ -134,15 +134,36 @@ class GaussianCenters():
 #         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
 #     return codebook_all
 
-def DFT_codebook(nseg,n_antenna,spacing=0.5):
+def DFT_angles(n_beam):
+    delta_theta = 1/n_beam
+    if n_beam % 2 == 1:
+        thetas = np.arange(0,1/2,delta_theta)
+        # thetas = np.linspace(0,1/2,n_beam//2+1,endpoint=False)
+        thetas = np.concatenate((-np.flip(thetas[1:]),thetas))
+    else:
+        thetas = np.arange(delta_theta/2,1/2,delta_theta) 
+        thetas = np.concatenate((-np.flip(thetas),thetas))
+    return thetas
+
+def DFT_codebook_ULA(nseg,n_antenna,spacing=0.5):
     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
-    thetas = np.linspace(-1/2,1/2,nseg,endpoint=False)
+    thetas = DFT_angles(nseg)
     azimuths = np.arcsin(1/spacing*thetas)
     for i,theta in enumerate(azimuths):
         #array response vector original
         arr_response_vec = [-1j*2*np.pi*k*spacing*np.sin(theta) for k in range(n_antenna)]
         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
     return codebook_all
+
+# def DFT_codebook(nseg,n_antenna,spacing=0.5):
+#     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
+#     thetas = np.linspace(-1/2,1/2,nseg,endpoint=False)
+#     azimuths = np.arcsin(1/spacing*thetas)
+#     for i,theta in enumerate(azimuths):
+#         #array response vector original
+#         arr_response_vec = [-1j*2*np.pi*k*spacing*np.sin(theta) for k in range(n_antenna)]
+#         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
+#     return codebook_all
 
 def DFT_codebook_alt(nseg,n_antenna):
     bfdirections = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),nseg))
