@@ -145,7 +145,7 @@ def DFT_angles(n_beam):
         thetas = np.concatenate((-np.flip(thetas),thetas))
     return thetas
 
-def DFT_codebook_ULA(nseg,n_antenna,spacing=0.5):
+def ULA_DFT_codebook(nseg,n_antenna,spacing=0.5):
     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
     thetas = DFT_angles(nseg)
     azimuths = np.arcsin(1/spacing*thetas)
@@ -164,6 +164,33 @@ def DFT_codebook_ULA(nseg,n_antenna,spacing=0.5):
 #         arr_response_vec = [-1j*2*np.pi*k*spacing*np.sin(theta) for k in range(n_antenna)]
 #         codebook_all[i,:] = np.exp(arr_response_vec)/np.sqrt(n_antenna)
 #     return codebook_all
+
+def UPA_DFT_codebook(n_azimuth,n_elevation,n_antenna_azimuth,n_antenna_elevation,spacing=0.5):
+    codebook_all = np.zeros((n_azimuth,n_elevation,n_antenna_azimuth*n_antenna_elevation),dtype=np.complex_)
+    thetas = DFT_angles(n_azimuth)
+    azimuths = np.arcsin(1/spacing*thetas)
+    a_azimuth = np.tile(azimuths,(n_antenna_azimuth,1)).T
+    a_azimuth = -1j*2*np.pi*spacing*np.sin(a_azimuth)
+    a_azimuth = a_azimuth * np.tile(np.arange(n_antenna_azimuth),(n_azimuth,1))
+    a_azimuth = np.exp(a_azimuth)/np.sqrt(n_antenna_azimuth)  
+
+    phis = DFT_angles(n_elevation)
+    elevations = np.arcsin(1/spacing*phis)
+    a_elevation = np.tile(elevations,(n_antenna_elevation,1)).T
+    a_elevation = -1j*2*np.pi*spacing*np.sin(a_elevation)
+    a_elevation = a_elevation * np.tile(np.arange(n_antenna_elevation),(n_elevation,1))
+    a_elevation = np.exp(a_elevation)/np.sqrt(n_antenna_elevation)  
+    
+    codebook_all = np.kron(a_elevation,a_azimuth)
+    return codebook_all
+
+def UPA_DFT_codebook_blockmatrix(n_azimuth,n_elevation,n_antenna_azimuth,n_antenna_elevation):
+    codebook = UPA_DFT_codebook(n_azimuth=n_azimuth,n_elevation=n_elevation,n_antenna_azimuth=n_antenna_azimuth,n_antenna_elevation=n_antenna_elevation).T
+    w_r = np.real(codebook)
+    w_i = np.imag(codebook)
+    w = np.concatenate((np.concatenate((w_r,-w_i),axis=1),np.concatenate((w_i,w_r),axis=1)),axis=0)
+    return w
+
 
 def DFT_codebook_alt(nseg,n_antenna):
     bfdirections = np.arccos(np.linspace(np.cos(0),np.cos(np.pi-1e-6),nseg))
@@ -195,8 +222,15 @@ def DFT_beam_blockmatrix(n_antenna,azimuths):
     w = np.concatenate((np.concatenate((w_r,-w_i),axis=1),np.concatenate((w_i,w_r),axis=1)),axis=0)
     return w
 
-def DFT_codebook_blockmatrix(nseg,n_antenna):
-    codebook = DFT_codebook(nseg,n_antenna).T
+def ULA_DFT_codebook_blockmatrix(nseg,n_antenna):
+    codebook = ULA_DFT_codebook(nseg,n_antenna).T
+    w_r = np.real(codebook)
+    w_i = np.imag(codebook)
+    w = np.concatenate((np.concatenate((w_r,-w_i),axis=1),np.concatenate((w_i,w_r),axis=1)),axis=0)
+    return w
+
+def codebook_blockmatrix(codebook):
+    # codebook has dimension n_antenna x n_beams
     w_r = np.real(codebook)
     w_i = np.imag(codebook)
     w = np.concatenate((np.concatenate((w_r,-w_i),axis=1),np.concatenate((w_i,w_r),axis=1)),axis=0)
@@ -235,4 +269,12 @@ def plot_codebook_pattern(codebook):
     ax.grid(True)
     ax.set_rlabel_position(-90)  # Move radial labels away from plotted line
     return fig, ax
+    # fig.show()
+    
+def plot_codebook_pattern_on_axe(codebook,ax):
+    for beam_i, beam in enumerate(codebook):
+        phi, bf_gain = calc_beam_pattern(beam)
+        ax.plot(phi,bf_gain)
+    ax.grid(True)
+    ax.set_rlabel_position(-90)  # Move radial labels away from plotted line
     # fig.show()

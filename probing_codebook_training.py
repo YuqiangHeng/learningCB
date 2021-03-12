@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jan 18 16:07:04 2021
+Created on Thu Feb 18 18:10:34 2021
 
 @author: ethan
 """
-
 import numpy as np
 import scipy.io as sio
 import matplotlib.pyplot as plt
@@ -21,12 +20,13 @@ np.random.seed(7)
 n_narrow_beams = [128, 128, 128, 128, 128, 128]
 n_wide_beams = [4, 6, 8, 10, 12, 16]
 # n_narrow_beams = [128]
-# n_wide_beams = [8]
+# n_wide_beams = [2]
 # num_of_beams = [32]
 n_antenna = 64
 antenna_sel = np.arange(n_antenna)
 nepoch = 200
 
+dataset_name = 'O28B_ULA' # 'Rosslyn_ULA' or 'O28B_ULA'
 # Training and testing data:
 # --------------------------
 batch_size = 500
@@ -35,19 +35,21 @@ batch_size = 500
 # It is expected to return:
 # train_inp, train_out, val_inp, and val_out
 #-------------------------------------------#
-# h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:,antenna_sel]
-# h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:,antenna_sel]
-# loc = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy')
-# h_real = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')
-# h_imag = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')
-
-fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_real.mat'
-fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_imag.mat'
-fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/loc.mat'
-
-h_real = sio.loadmat(fname_h_real)['h_real']
-h_imag = sio.loadmat(fname_h_imag)['h_imag']
-loc = sio.loadmat(fname_loc)['loc']
+if dataset_name == 'Rosslyn_ULA':
+    h_real = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')[:,antenna_sel]
+    h_imag = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')[:,antenna_sel]
+    loc = np.load('D://Github Repositories/mmWave Beam Management/H_Matrices FineGrid/MISO_Static_FineGrid_UE_location.npy')
+    # h_real = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_real.npy')
+    # h_imag = np.load('/Users/yh9277/Dropbox/ML Beam Alignment/Data/H_Matrices FineGrid/MISO_Static_FineGrid_Hmatrices_imag.npy')
+elif dataset_name == 'O28B_ULA':
+    fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_real.mat'
+    fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/h_imag.mat'
+    fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x64x1_ULA/loc.mat'
+    h_real = sio.loadmat(fname_h_real)['h_real']
+    h_imag = sio.loadmat(fname_h_imag)['h_imag']
+    loc = sio.loadmat(fname_loc)['loc']
+else:
+    raise NameError('Dataset Not Supported')
 
 h = h_real + 1j*h_imag
 valid_ue_idc = np.array([row_idx for (row_idx,row) in enumerate(np.concatenate((h_real,h_imag),axis=1)) if not all(row==0)])
@@ -183,7 +185,8 @@ learned_codebook_topk_gain= []
 optimal_gains = []
 learned_codebooks = []
 dft_codebooks = []
-for n_nb, n_wb in zip(n_narrow_beams,n_wide_beams):
+for n_wb_i, n_wb in enumerate(n_wide_beams):
+    n_nb = n_narrow_beams[n_wb_i]
     print('{} Wide Beams, {} Narrow Beams.'.format(n_wb,n_nb))
     dft_nb_codebook = DFT_codebook(nseg=n_nb,n_antenna=n_antenna)
     label = np.argmax(np.power(np.absolute(np.matmul(h_scaled, dft_nb_codebook.conj().T)),2),axis=1)
@@ -210,7 +213,7 @@ for n_nb, n_wb in zip(n_narrow_beams,n_wide_beams):
     learnable_codebook_model = Beam_Classifier(n_antenna=n_antenna,n_wide_beam=n_wb,n_narrow_beam=n_nb,trainable_codebook=True)
     learnable_codebook_opt = optim.Adam(learnable_codebook_model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
     train_loss_hist, val_loss_hist = fit(learnable_codebook_model, train_loader, val_loader, learnable_codebook_opt, nn.CrossEntropyLoss(), nepoch)  
-    torch.save(learnable_codebook_model.state_dict(),'O28B_ULA_trainable_{}_beam_probing_codebook_{}_beam_classifier.pt'.format(n_wb,n_nb))
+    torch.save(learnable_codebook_model.state_dict(),'./Saved Models/{}_trainable_{}_beam_probing_codebook_{}_beam_classifier.pt'.format(dataset_name,n_wb,n_nb))
     plt.figure()
     plt.plot(train_loss_hist,label='training loss')
     plt.plot(val_loss_hist,label='validation loss')
@@ -233,7 +236,7 @@ for n_nb, n_wb in zip(n_narrow_beams,n_wide_beams):
     dft_codebook_model = Beam_Classifier(n_antenna=n_antenna,n_wide_beam=n_wb,n_narrow_beam=n_nb,trainable_codebook=False)
     dft_codebook_opt = optim.Adam(dft_codebook_model.parameters(),lr=0.01, betas=(0.9,0.999), amsgrad=False)
     train_loss_hist, val_loss_hist = fit(dft_codebook_model, train_loader, val_loader, dft_codebook_opt, nn.CrossEntropyLoss(), nepoch)
-    torch.save(dft_codebook_model.state_dict(),'O28B_ULA_DFT_{}_beam_probing_codebook_{}_beam_classifier.pt'.format(n_wb,n_nb))
+    torch.save(dft_codebook_model.state_dict(),'./Saved Models/{}_DFT_{}_beam_probing_codebook_{}_beam_classifier.pt'.format(dataset_name,n_wb,n_nb))
     plt.figure()
     plt.plot(train_loss_hist,label='training loss')
     plt.plot(val_loss_hist,label='validation loss')
@@ -302,24 +305,14 @@ for iwb,nwb in enumerate(n_wide_beams):
         plt.hist(learned_codebook_topk_snr[iwb,:,k], bins=100, density=True, cumulative=True, histtype='step', label='Trainable codebook, k={}'.format(k+1))
         plt.hist(dft_codebook_topk_snr[iwb,:,k], bins=100, density=True, cumulative=True, histtype='step', label='DFT codebook, k={}'.format(k+1))
     plt.hist(optimal_snr[iwb,:], bins=100, density=True, cumulative=True, histtype='step', label='Optimal') 
-    plt.legend()
+    plt.legend(loc='upper left')
     plt.ylabel('CDF')
     plt.xlabel('SNR (dB)')
     plt.title('CDF of SNR of top-k predicted beams, number of probe beams = {}'.format(nwb))
     plt.show()
-
 
 for i,N in enumerate(n_wide_beams):     
     fig,ax = plot_codebook_pattern(learned_codebooks[i].T)
     ax.set_title('Trainable {}-Beam Codebook'.format(N))
     fig,ax = plot_codebook_pattern(dft_codebooks[i].T)
     ax.set_title('DFT {}-Beam Codebook'.format(N))
-
-# for i,N in enumerate(n_wide_beams):  
-#     np.save('Rosslyn_ULA_probe_trainable_codebook_{}_beam.npy'.format(N),learned_codebooks[i].T)
-#     np.save('Rosslyn_ULA_probe_DFT_codebook_{}_beam.npy'.format(N),dft_codebooks[i].T)   
-    
-for i,N in enumerate(n_wide_beams):  
-    np.save('O28B_ULA_probe_trainable_codebook_{}_beam.npy'.format(N),learned_codebooks[i].T)
-    np.save('O28B_ULA_probe_DFT_codebook_{}_beam.npy'.format(N),dft_codebooks[i].T)
-     

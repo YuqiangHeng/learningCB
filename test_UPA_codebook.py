@@ -9,23 +9,6 @@ import numpy as np
 import scipy.io as sio
 import matplotlib.pyplot as plt
 
-# fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x8x8_UPA/h_real.mat'
-# fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x8x8_UPA/h_imag.mat'
-# fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28B_1x8x8_UPA/loc.mat'
-
-# h_real = sio.loadmat(fname_h_real)['h_real']
-# h_imag = sio.loadmat(fname_h_imag)['h_imag']
-# loc = sio.loadmat(fname_loc)['loc']
-# n_antenna = 64
-# array_size = np.array([1,8,8])
-# oversampling_factor = 1
-
-
-# h = h_real + 1j*h_imag
-# norm_factor = np.max(abs(h))
-# h_scaled = h/norm_factor
-        
-
 def calc_beam_pattern(beam, resolution = int(1e3), n_antenna = 64, array_type='ULA', k=0.5):
     # phi_all = np.linspace(0,np.pi,resolution)
     phi_all = np.linspace(-np.pi/2,np.pi/2,resolution)
@@ -36,6 +19,22 @@ def calc_beam_pattern(beam, resolution = int(1e3), n_antenna = 64, array_type='U
     array_response_vectors = np.exp(array_response_vectors)/np.sqrt(n_antenna)
     gains = abs(array_response_vectors.conj() @ beam)**2
     return phi_all, gains
+
+# def calc_beam_pattern_azimuth(beam,  n_antenna_azimuth = 8, n_antenna_elevation = 8, elevation = 0, resolution = int(1e3), array_type='UPA', k=0.5):
+#     # phi_all = np.linspace(0,np.pi,resolution)
+#     phi_all = np.linspace(-np.pi/2,np.pi/2,resolution)
+#     array_response_vectors_azimuth = np.tile(phi_all,(n_antenna_azimuth,1)).T
+#     array_response_vectors_azimuth = -1j*2*np.pi*k*np.sin(array_response_vectors_azimuth)
+#     array_response_vectors_azimuth = array_response_vectors_azimuth * np.arange(n_antenna_azimuth)
+#     array_response_vectors_azimuth = np.exp(array_response_vectors_azimuth)/np.sqrt(n_antenna_azimuth)
+    
+#     array_response_vectors_elevation = np.tile(phi_all,(n_antenna_elevation,1)).T
+#     array_response_vectors_elevation = -1j*2*np.pi*k*np.sin(array_response_vectors_elevation)
+#     array_response_vectors_elevation = array_response_vectors_elevation * np.arange(n_antenna_elevation)
+#     array_response_vectors_elevation = np.exp(array_response_vectors_elevation)/np.sqrt(n_antenna_elevation)    
+#     array
+#     gains = abs(array_response_vectors.conj() @ beam)**2
+#     return phi_all, gains
 
 def plot_codebook_pattern(codebook):
     fig = plt.figure()
@@ -60,21 +59,40 @@ def DFT_angles(n_beam):
     return thetas
             
     
-def DFT_codebook_UPA(n_azimuth,n_elevation,n_antenna_azimuth, n_antenna_elevation,spacing=0.5):
+# def DFT_codebook_UPA(n_azimuth,n_elevation,n_antenna_azimuth,n_antenna_elevation,spacing=0.5):
+#     codebook_all = np.zeros((n_azimuth,n_elevation,n_antenna_azimuth*n_antenna_elevation),dtype=np.complex_)
+#     thetas = DFT_angles(n_azimuth)
+#     azimuths = np.arcsin(1/spacing*thetas)
+#     phis = DFT_angles(n_elevation)
+#     elevations = np.arcsin(1/spacing*phis)
+#     for theta_i,theta in enumerate(azimuths):
+#         for phi_i,phi in enumerate(elevations):
+#             a_azimuth = [-1j*2*np.pi*k*spacing*np.sin(theta) for k in range(n_antenna_azimuth)]
+#             a_azimuth = np.exp(a_azimuth)/np.sqrt(n_antenna_azimuth)
+#             a_elevation = [-1j*2*np.pi*k*spacing*np.sin(phi) for k in range(n_antenna_elevation)] 
+#             a_elevation = np.exp(a_elevation)/np.sqrt(n_antenna_elevation)
+#             a = np.kron(a_azimuth,a_elevation)
+#             codebook_all[theta_i,phi_i,:] = a
+#     return codebook_all,(azimuths,elevations)
+
+def DFT_codebook_UPA(n_azimuth,n_elevation,n_antenna_azimuth,n_antenna_elevation,spacing=0.5):
     codebook_all = np.zeros((n_azimuth,n_elevation,n_antenna_azimuth*n_antenna_elevation),dtype=np.complex_)
-    thetas = np.linspace(-1/2,1/2,n_azimuth,endpoint=False)
+    thetas = DFT_angles(n_azimuth)
     azimuths = np.arcsin(1/spacing*thetas)
-    phis = np.linspace(-1/2,1/2,n_elevation,endpoint=False)
+    a_azimuth = np.tile(azimuths,(n_antenna_azimuth,1)).T
+    a_azimuth = -1j*2*np.pi*spacing*np.sin(a_azimuth)
+    a_azimuth = a_azimuth * np.tile(np.arange(n_antenna_azimuth),(n_azimuth,1))
+    a_azimuth = np.exp(a_azimuth)/np.sqrt(n_antenna_azimuth)  
+
+    phis = DFT_angles(n_elevation)
     elevations = np.arcsin(1/spacing*phis)
-    for theta_i,theta in enumerate(azimuths):
-        for phi_i,phi in enumerate(elevations):
-            a_azimuth = [-1j*2*np.pi*k*spacing*np.sin(theta) for k in range(n_antenna_azimuth)]
-            a_azimuth = np.exp(a_azimuth)/np.sqrt(n_antenna_azimuth)
-            a_elevation = [-1j*2*np.pi*k*spacing*np.sin(phi) for k in range(n_antenna_elevation)] 
-            a_elevation = np.exp(a_elevation)/np.sqrt(n_antenna_elevation)
-            a = np.kron(a_azimuth,a_elevation)
-            codebook_all[theta_i,phi_i,:] = a
-    return codebook_all,(azimuths,elevations)
+    a_elevation = np.tile(elevations,(n_antenna_elevation,1)).T
+    a_elevation = -1j*2*np.pi*spacing*np.sin(a_elevation)
+    a_elevation = a_elevation * np.tile(np.arange(n_antenna_elevation),(n_elevation,1))
+    a_elevation = np.exp(a_elevation)/np.sqrt(n_antenna_elevation)  
+    
+    codebook_all = np.kron(a_elevation,a_azimuth)
+    return codebook_all
 
 def DFT_codebook_ULA(nseg,n_antenna,spacing=0.5):
     codebook_all = np.zeros((nseg,n_antenna),dtype=np.complex_)
@@ -102,13 +120,57 @@ def cart2sph(xyz,center):
     rtp[:,2] = phi
     return rtp
 
-cb1,bfd1 = DFT_codebook_ULA(19,64)
-fig1,ax1 = plot_codebook_pattern(cb1)
-ax1.set_title('Codebook1')
+fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28_UE800_1200_BS3_1x8x8_UPA/h_real.mat'
+fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28_UE800_1200_BS3_1x8x8_UPA/h_imag.mat'
+fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28_UE800_1200_BS3_1x8x8_UPA/loc.mat'
 
-cb2,bfd2 = DFT_codebook_ULA(20,64)
-fig2,ax2 = plot_codebook_pattern(cb2)
-ax2.set_title('Codebook2')
+h_real = sio.loadmat(fname_h_real)['h_real']
+h_imag = sio.loadmat(fname_h_imag)['h_imag']
+loc = sio.loadmat(fname_loc)['loc']
+n_antenna = 64
+# array_size = np.array([1,8,8])
+# oversampling_factor = 1
+h = h_real + 1j*h_imag
+norm_factor = np.max(abs(h))
+h_scaled = h/norm_factor
+
+upa_cb = DFT_codebook_UPA(n_azimuth=8,n_elevation=8,n_antenna_azimuth=8,n_antenna_elevation=8,spacing=0.5)
+
+bf_gain = np.absolute(np.matmul(h, upa_cb.conj().T))**2 #shape n_ue x codebook_size
+snr = 30 + 10*np.log10(bf_gain) + 94 -13
+max_snr = snr.max(axis=1)
+plt.figure()
+plt.hist(max_snr,bins=100,histtype='step',cumulative=True)
+plt.show()
+
+# fname_h_real = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28_UE800_1200_BS3_1x8x1_ULA/h_real.mat'
+# fname_h_imag = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28_UE800_1200_BS3_1x8x1_ULA/h_imag.mat'
+# fname_loc = 'D://Github Repositories/DeepMIMO-codes/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO_Dataset_Generation_v1.1/DeepMIMO Dataset/O28_UE800_1200_BS3_1x8x1_ULA/loc.mat'
+
+# h_real = sio.loadmat(fname_h_real)['h_real']
+# h_imag = sio.loadmat(fname_h_imag)['h_imag']
+# loc = sio.loadmat(fname_loc)['loc']
+# n_antenna = 8
+# h = h_real + 1j*h_imag
+# norm_factor = np.max(abs(h))
+# h_scaled = h/norm_factor
+
+# ula_cb,ula_az = DFT_codebook_ULA(nseg=8,n_antenna=8,spacing=0.5)
+
+# bf_gain = np.absolute(np.matmul(h, ula_cb.conj().T))**2 #shape n_ue x codebook_size
+# snr = 30 + 10*np.log10(bf_gain) + 94 -13
+# max_snr = snr.max(axis=1)
+# plt.figure()
+# plt.hist(max_snr,bins=100,histtype='step',cumulative=True)
+# plt.show()
+
+# cb1,bfd1 = DFT_codebook_ULA(19,64)
+# fig1,ax1 = plot_codebook_pattern(cb1)
+# ax1.set_title('Codebook1')
+
+# cb2,bfd2 = DFT_codebook_ULA(20,64)
+# fig2,ax2 = plot_codebook_pattern(cb2)
+# ax2.set_title('Codebook2')
 
 # bfdirections = np.linspace(0,np.pi,128)
 # cb1,bfd1 = DFT_codebook_1(128,n_antenna)
